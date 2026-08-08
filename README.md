@@ -11,7 +11,7 @@ Early prototype. Currently in Phase 1: proving that a procedurally generated,
 walkable 3D unit (from simple floor plan data) is a compelling experience
 before adding finishes, furniture, or real CAD import.
 
-## Current Structure (Phase 1)
+## Current Structure for (Phase 1)
 
 phase1-viewer/
 index.html # Entry point, loads the Three.js app
