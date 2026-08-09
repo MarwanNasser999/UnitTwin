@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { buildFloorPlan } from './floorplan.js';
+import { buildFloorPlan, applyWallColor, applyFloorColor } from './floorplan.js';
 import { floorPlan } from './floorplanData.js';
 
 // 1. Scene
@@ -14,17 +14,16 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   1000
 );
-camera.position.set(0, 1.6, 0); // 1.6m ~ average eye height
+camera.position.set(0, 1.6, 0);
 
 // 3. Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.getElementById('app').appendChild(renderer.domElement);
 
-// 4. Pointer lock controls — mouse movement -> camera look direction
+// 4. Pointer lock controls
 const controls = new PointerLockControls(camera, document.body);
 
-// Click anywhere to lock the pointer and start looking around
 document.addEventListener('click', () => {
   controls.lock();
 });
@@ -32,6 +31,21 @@ document.addEventListener('click', () => {
 // Floor plan
 const roomsGroup = buildFloorPlan(floorPlan);
 scene.add(roomsGroup);
+
+// --- TEMPORARY TEST: apply color, then log actual state after ---
+
+
+roomsGroup.traverse((child) => {
+  if (child.isMesh) {
+    console.log(child.name, child.material.color.getHexString());
+  }
+});
+roomsGroup.traverse((child) => {
+  if (child.isMesh) {
+    console.log(child.name, child.material.color.getHexString());
+  }
+});
+// --- END TEMPORARY TEST ---
 
 // Lighting
 const light = new THREE.DirectionalLight(0xffffff, 2);
@@ -41,7 +55,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.3));
 
 // --- WASD movement ---
 const move = { forward: false, back: false, left: false, right: false };
-const MOVE_SPEED = 3; // meters per second
+const MOVE_SPEED = 3;
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyW') move.forward = true;
@@ -63,10 +77,9 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
 
-  const delta = clock.getDelta(); // seconds since last frame — makes movement speed
-                                    // consistent regardless of framerate
-
+  const delta = clock.getDelta();
   const distance = MOVE_SPEED * delta;
+
   if (move.forward) controls.moveForward(distance);
   if (move.back) controls.moveForward(-distance);
   if (move.right) controls.moveRight(distance);

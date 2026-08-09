@@ -3,11 +3,7 @@ import * as THREE from 'three';
 const WALL_HEIGHT = 2.5;
 const WALL_THICKNESS = 0.1;
 
-/**
- * Builds one wall segment (a solid box) of a given length,
- * positioned at segmentMidDist along the start->end direction.
- */
-function createWallSegment(start, ux, uz, angle, fromDist, toDist) {
+function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
   const segLength = toDist - fromDist;
   const midDist = (fromDist + toDist) / 2;
 
@@ -21,55 +17,49 @@ function createWallSegment(start, ux, uz, angle, fromDist, toDist) {
     start.z + uz * midDist
   );
   wall.rotation.y = -angle;
+  wall.name = wallId;
 
   return wall;
 }
 
 /**
- * Builds a wall between start and end. If `openings` is empty, this is
- * one solid segment (same as before). If openings are given, the wall
- * is split into multiple segments with gaps left at each opening.
- *
- * Each opening: { offset, width } — offset = distance from `start`
- * where the gap begins, width = how wide the gap is, both in meters
- * along the wall's own direction.
+ * Builds ONE wall (possibly split into multiple segments if it has
+ * openings) from a single wall data entry. Returns a THREE.Group.
  */
-function createWall(start, end, openings = []) {
+function buildWall(wallData) {
+  const { start, end, openings = [], id } = wallData;
+
   const dx = end.x - start.x;
   const dz = end.z - start.z;
   const length = Math.sqrt(dx * dx + dz * dz);
   const angle = Math.atan2(dz, dx);
-  const ux = dx / length; // unit direction vector (x component)
-  const uz = dz / length; // unit direction vector (z component)
+  const ux = dx / length;
+  const uz = dz / length;
 
   const group = new THREE.Group();
+  group.name = `${id}_group`; // the group itself; individual segments carry the real id
 
   if (openings.length === 0) {
-    group.add(createWallSegment(start, ux, uz, angle, 0, length));
+    group.add(createWallSegment(start, ux, uz, angle, 0, length, id));
     return group;
   }
 
-  // Sort openings by where they start along the wall, so we can walk
-  // along the wall left-to-right and build solid segments in the gaps.
   const sorted = [...openings].sort((a, b) => a.offset - b.offset);
-
   let cursor = 0;
   for (const opening of sorted) {
     if (opening.offset > cursor) {
-      group.add(createWallSegment(start, ux, uz, angle, cursor, opening.offset));
+      group.add(createWallSegment(start, ux, uz, angle, cursor, opening.offset, id));
     }
     cursor = opening.offset + opening.width;
   }
   if (cursor < length) {
-    group.add(createWallSegment(start, ux, uz, angle, cursor, length));
+    group.add(createWallSegment(start, ux, uz, angle, cursor, length, id));
   }
 
   return group;
 }
 
 function createFloor(corners) {
-  // Find the min/max X and Z across this room's corners to determine
-  // the floor's size and center position.
   const xs = corners.map((c) => c.x);
   const zs = corners.map((c) => c.z);
   const minX = Math.min(...xs);
@@ -85,50 +75,68 @@ function createFloor(corners) {
   const geometry = new THREE.PlaneGeometry(width, depth);
   const material = new THREE.MeshStandardMaterial({
     color: 0x999999,
-    side: THREE.DoubleSide
+    side: THREE.DoubleSide,
   });
   const floor = new THREE.Mesh(geometry, material);
+  floor.name = 'floor';
 
   floor.rotation.x = -Math.PI / 2;
-  floor.position.set(centerX, 0, centerZ); // <-- the missing piece: actually placing it
+  floor.position.set(centerX, 0, centerZ);
 
   return floor;
 }
 
 /**
- * corners: list of {x, z} points, in order, forming a closed loop.
- * openings: list of { wallStart, wallEnd, offset, width }, where
- * wallStart/wallEnd are corner indices identifying which wall the
- * opening belongs to.
+ * Builds the entire floor plan: each wall built exactly once (from
+ * floorPlan.walls), plus one floor per room (from floorPlan.rooms).
+ * Rooms no longer own/duplicate their walls — they just reference them
+ * via wallIds, which is used elsewhere (not for geometry building).
  */
-export function buildRoom(corners, openings = []) {
-  const room = new THREE.Group();
+export function buildFloorPlan(floorPlan) {
+  const root = new THREE.Group();
 
-  for (let i = 0; i < corners.length; i++) {
-    const start = corners[i];
-    const end = corners[(i + 1) % corners.length];
+  // Build every wall once.
+  const wallsGroup = new THREE.Group();
+  wallsGroup.name = 'walls';
+  for (const wallData of floorPlan.walls) {
+    wallsGroup.add(buildWall(wallData));
+  }
+  root.add(wallsGroup);
 
-    const wallOpenings = openings
-      .filter((o) => o.wallStart === i && o.wallEnd === (i + 1) % corners.length)
-      .map((o) => ({ offset: o.offset, width: o.width }));
-
-    room.add(createWall(start, end, wallOpenings));
+  // Build one floor per room.
+  for (const roomData of floorPlan.rooms) {
+    const roomGroup = new THREE.Group();
+    roomGroup.name = roomData.id;
+    roomGroup.add(createFloor(roomData.corners));
+    root.add(roomGroup);
   }
 
-  const floor = createFloor(corners); // still hardcoded size for now, fine for this step
-  room.add(floor);
-
-  return room;
+  return root;
 }
 
-export function buildFloorPlan(floorPlan) {
-  const allRooms = new THREE.Group();
+/**
+ * Recolors a wall by its unique id. Walls now live directly under the
+ * "walls" group, not nested inside a room, so we search the whole
+ * floor plan root rather than looking inside a specific room first.
+ */
+export function applyWallColor(floorPlanRoot, wallId, colorHex) {
+  floorPlanRoot.traverse((child) => {
+    if (child.isMesh && child.name === wallId) {
+      child.material.color.set(colorHex);
+    }
+  });
+}
 
-  for (const roomData of floorPlan.rooms) {
-    const roomMesh = buildRoom(roomData.corners, roomData.openings || []);
-    roomMesh.name = roomData.id;
-    allRooms.add(roomMesh);
-  }
+/**
+ * Recolors a room's floor by room id.
+ */
+export function applyFloorColor(floorPlanRoot, roomId, colorHex) {
+  const room = floorPlanRoot.getObjectByName(roomId);
+  if (!room) return;
 
-  return allRooms;
+  room.traverse((child) => {
+    if (child.isMesh && child.name === 'floor') {
+      child.material.color.set(colorHex);
+    }
+  });
 }
