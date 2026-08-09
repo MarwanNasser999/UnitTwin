@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { buildFloorPlan } from './floorplan.js';
 import { floorPlan } from './floorplanData.js';
-import { buildUI, selectWallFromScene } from './ui.js';
+import { buildUI, selectWallFromScene, togglePanel } from './ui.js';
 
 // 1. Scene
 const scene = new THREE.Scene();
@@ -25,14 +25,6 @@ document.getElementById('app').appendChild(renderer.domElement);
 // 4. Pointer lock controls
 const controls = new PointerLockControls(camera, document.body);
 
-// First click locks the pointer. Once locked, clicks are used for
-// wall selection instead (handled below).
-document.addEventListener('click', () => {
-  if (!controls.isLocked) {
-    controls.lock();
-  }
-});
-
 // Floor plan
 const roomsGroup = buildFloorPlan(floorPlan);
 scene.add(roomsGroup);
@@ -46,24 +38,40 @@ light.position.set(5, 10, 7);
 scene.add(light);
 scene.add(new THREE.AmbientLight(0xffffff, 0.3));
 
-// --- Wall selection via raycasting ---
-// Since the pointer is locked (cursor hidden, centered), we always
-// raycast from the CENTER of the screen — like a crosshair in a
-// first-person game — not from a mouse position.
+// --- Click handling: lock pointer OR select a wall, never both,
+// and never when the click landed on the UI panel. ---
 const raycaster = new THREE.Raycaster();
-const screenCenter = new THREE.Vector2(0, 0); // (0,0) = center in normalized device coords
+const screenCenter = new THREE.Vector2(0, 0);
 
-document.addEventListener('click', () => {
-  if (!controls.isLocked) return; // ignore the click that just locked the pointer
+document.addEventListener('click', (event) => {
+  // If the click landed on the UI panel (or any of its children),
+  // let the panel's own button handlers deal with it — don't lock
+  // the pointer or raycast into the scene.
+  if (event.target.closest('#ui-panel')) return;
 
+  if (!controls.isLocked) {
+    controls.lock();
+    return;
+  }
+
+  // Pointer is already locked — this click means "select what I'm looking at"
   raycaster.setFromCamera(screenCenter, camera);
-  const intersects = raycaster.intersectObjects(roomsGroup.getObjectByName('walls').children, true);
+  const wallsGroup = roomsGroup.getObjectByName('walls');
+  const intersects = raycaster.intersectObjects(wallsGroup.children, true);
 
   if (intersects.length > 0) {
-    const hitMesh = intersects[0].object; // closest hit
+    const hitMesh = intersects[0].object;
     if (hitMesh.isMesh && hitMesh.name) {
       selectWallFromScene(hitMesh.name);
     }
+  }
+});
+
+// --- Tab toggles the panel manually ---
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Tab') {
+    e.preventDefault(); // stop Tab from doing browser default (focus-switching)
+    togglePanel();
   }
 });
 

@@ -7,7 +7,8 @@ let selectedRoomId = floorPlan.rooms[0].id;
 let selectedWallId = null;
 
 // Keep references so external code (main.js) can trigger a re-render
-// after changing selection state from a 3D click, not just from the panel.
+// or visibility change after selection state changes from a 3D click,
+// not just from the panel itself.
 let panelEl = null;
 let roomsGroupRef = null;
 
@@ -27,10 +28,19 @@ export function buildUI(roomsGroup) {
   renderPanel(panel, roomsGroup);
 }
 
+export function togglePanel() {
+  if (panelEl) panelEl.classList.toggle('visible');
+}
+
+export function showPanel() {
+  if (panelEl) panelEl.classList.add('visible');
+}
+
 /**
  * Called from main.js when the user clicks a wall directly in the 3D
  * scene. Finds which room owns that wall (so the room dropdown stays
- * in sync too), updates selection state, and re-renders the panel.
+ * in sync too), updates selection state, re-renders, and auto-shows
+ * the panel so the selection is actually visible/actionable.
  */
 export function selectWallFromScene(wallId) {
   const owningRoom = floorPlan.rooms.find((r) => r.wallIds.includes(wallId));
@@ -41,11 +51,12 @@ export function selectWallFromScene(wallId) {
 
   if (panelEl && roomsGroupRef) {
     renderPanel(panelEl, roomsGroupRef);
+    showPanel();
   }
 }
 
 function renderPanel(panel, roomsGroup) {
-  panel.innerHTML = ''; // clear and rebuild on every state change — simplest approach for now
+  panel.innerHTML = '';
 
   // --- Room selector ---
   const roomLabel = document.createElement('div');
@@ -63,7 +74,7 @@ function renderPanel(panel, roomsGroup) {
   }
   roomSelect.addEventListener('change', (e) => {
     selectedRoomId = e.target.value;
-    selectedWallId = null; // reset wall selection when room changes
+    selectedWallId = null;
     renderPanel(panel, roomsGroup);
   });
   panel.appendChild(roomSelect);
