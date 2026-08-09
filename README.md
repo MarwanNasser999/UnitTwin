@@ -23,7 +23,10 @@ package.json # Dependencies (Three.js, dev server)
 
 ## Roadmap
 
-- [ ] Phase 1 — Static walkable single-unit viewer (in progress)
+- [x] Phase 1 — Static walkable single-unit viewer
+      (Known limitation: no wall collision yet — you can walk through walls.
+      Expected to be resolved naturally in Phase 3, which needs raycasting
+      for furniture selection anyway — collision will reuse that same logic.)
 - [ ] Phase 2 — Live finish/material swapping (floors, paint, cabinets)
 - [ ] Phase 3 — Furniture placement (catalog assets) + AI layout suggestions
       (LLM/rules-based: suggest furniture arrangement given room dims + style)
