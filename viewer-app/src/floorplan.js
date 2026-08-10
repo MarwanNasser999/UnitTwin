@@ -22,10 +22,6 @@ function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
   return wall;
 }
 
-/**
- * Builds ONE wall (possibly split into multiple segments if it has
- * openings) from a single wall data entry. Returns a THREE.Group.
- */
 function buildWall(wallData) {
   const { start, end, openings = [], id } = wallData;
 
@@ -37,7 +33,7 @@ function buildWall(wallData) {
   const uz = dz / length;
 
   const group = new THREE.Group();
-  group.name = `${id}_group`; // the group itself; individual segments carry the real id
+  group.name = `${id}_group`;
 
   if (openings.length === 0) {
     group.add(createWallSegment(start, ux, uz, angle, 0, length, id));
@@ -86,16 +82,9 @@ function createFloor(corners) {
   return floor;
 }
 
-/**
- * Builds the entire floor plan: each wall built exactly once (from
- * floorPlan.walls), plus one floor per room (from floorPlan.rooms).
- * Rooms no longer own/duplicate their walls — they just reference them
- * via wallIds, which is used elsewhere (not for geometry building).
- */
 export function buildFloorPlan(floorPlan) {
   const root = new THREE.Group();
 
-  // Build every wall once.
   const wallsGroup = new THREE.Group();
   wallsGroup.name = 'walls';
   for (const wallData of floorPlan.walls) {
@@ -103,7 +92,6 @@ export function buildFloorPlan(floorPlan) {
   }
   root.add(wallsGroup);
 
-  // Build one floor per room.
   for (const roomData of floorPlan.rooms) {
     const roomGroup = new THREE.Group();
     roomGroup.name = roomData.id;
@@ -114,11 +102,6 @@ export function buildFloorPlan(floorPlan) {
   return root;
 }
 
-/**
- * Recolors a wall by its unique id. Walls now live directly under the
- * "walls" group, not nested inside a room, so we search the whole
- * floor plan root rather than looking inside a specific room first.
- */
 export function applyWallColor(floorPlanRoot, wallId, colorHex) {
   floorPlanRoot.traverse((child) => {
     if (child.isMesh && child.name === wallId) {
@@ -127,9 +110,6 @@ export function applyWallColor(floorPlanRoot, wallId, colorHex) {
   });
 }
 
-/**
- * Recolors a room's floor by room id.
- */
 export function applyFloorColor(floorPlanRoot, roomId, colorHex) {
   const room = floorPlanRoot.getObjectByName(roomId);
   if (!room) return;
@@ -139,4 +119,18 @@ export function applyFloorColor(floorPlanRoot, roomId, colorHex) {
       child.material.color.set(colorHex);
     }
   });
+}
+
+/**
+ * Returns an OBB ({x, z, halfWidth, halfDepth, rotation}) for a wall
+ * mesh, derived from its actual BoxGeometry dimensions and transform.
+ */
+export function getWallOBB(wallMesh) {
+  return {
+    x: wallMesh.position.x,
+    z: wallMesh.position.z,
+    halfWidth: wallMesh.geometry.parameters.width / 2,
+    halfDepth: wallMesh.geometry.parameters.depth / 2,
+    rotation: wallMesh.rotation.y,
+  };
 }

@@ -11,10 +11,11 @@ let panelMode = null;
 let panelEl = null;
 let roomsGroupRef = null;
 let onFurnitureChanged = null;
-let cameraRef = null;
+let getSpawnPointCallback = null;
 let exitEditModeCallback = null;
+let setDragModeCallback = null;
 
-export function buildUI(roomsGroup, furnitureChangeCallback, camera, exitEditMode) {
+export function buildUI(roomsGroup, furnitureChangeCallback, getSpawnPoint, exitEditMode, setDragMode) {
   const panel = document.createElement('div');
   panel.id = 'ui-panel';
   document.body.appendChild(panel);
@@ -22,8 +23,9 @@ export function buildUI(roomsGroup, furnitureChangeCallback, camera, exitEditMod
   panelEl = panel;
   roomsGroupRef = roomsGroup;
   onFurnitureChanged = furnitureChangeCallback;
-  cameraRef = camera;
+  getSpawnPointCallback = getSpawnPoint;
   exitEditModeCallback = exitEditMode;
+  setDragModeCallback = setDragMode;
 
   renderPanel(panel, roomsGroup);
 }
@@ -173,10 +175,8 @@ function renderWallPanel(panel, roomsGroup) {
     btn.textContent = item.label;
     btn.className = 'ui-btn';
     btn.addEventListener('click', () => {
-      addFurnitureInstance(item.id, selectedRoomId, {
-        x: cameraRef.position.x,
-        z: cameraRef.position.z,
-      });
+      const spawnPoint = getSpawnPointCallback(item); // pass the catalog item now
+      addFurnitureInstance(item.id, selectedRoomId, spawnPoint);
 
       if (onFurnitureChanged) onFurnitureChanged();
     });
@@ -201,15 +201,37 @@ function renderFurniturePanel(panel) {
   panel.appendChild(label);
 
   const hint = document.createElement('div');
-  hint.textContent = 'Drag the gizmo to move/rotate. Press R to switch mode.';
+  hint.textContent = 'Move: drag the object. Rotate: use the ring. Press R to switch.';
   hint.style.opacity = '0.7';
   hint.style.fontSize = '12px';
   panel.appendChild(hint);
 
+  const modeRow = document.createElement('div');
+  modeRow.className = 'ui-button-row';
+  modeRow.style.marginTop = '6px';
+
+  const moveModeBtn = document.createElement('button');
+  moveModeBtn.textContent = 'Move';
+  moveModeBtn.className = 'ui-btn';
+  moveModeBtn.addEventListener('click', () => {
+    if (setDragModeCallback) setDragModeCallback('move');
+  });
+  modeRow.appendChild(moveModeBtn);
+
+  const rotateModeBtn = document.createElement('button');
+  rotateModeBtn.textContent = 'Rotate';
+  rotateModeBtn.className = 'ui-btn';
+  rotateModeBtn.addEventListener('click', () => {
+    if (setDragModeCallback) setDragModeCallback('rotate');
+  });
+  modeRow.appendChild(rotateModeBtn);
+
+  panel.appendChild(modeRow);
+
   const doneBtn = document.createElement('button');
   doneBtn.textContent = 'Done Editing';
   doneBtn.className = 'ui-btn';
-  doneBtn.style.marginTop = '6px';
+  doneBtn.style.marginTop = '10px';
   doneBtn.addEventListener('click', () => {
     if (exitEditModeCallback) exitEditModeCallback();
 
@@ -222,7 +244,7 @@ function renderFurniturePanel(panel) {
   const deleteBtn = document.createElement('button');
   deleteBtn.textContent = 'Delete';
   deleteBtn.className = 'ui-btn';
-  deleteBtn.style.marginTop = '10px';
+  deleteBtn.style.marginTop = '6px';
   deleteBtn.addEventListener('click', () => {
     if (exitEditModeCallback) exitEditModeCallback();
 
