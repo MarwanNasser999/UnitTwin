@@ -11,15 +11,19 @@ Early prototype. Currently in Phase 1: proving that a procedurally generated,
 walkable 3D unit (from simple floor plan data) is a compelling experience
 before adding finishes, furniture, or real CAD import.
 
-## Current Structure for (Phase 1)
+## Current Structure
 
-phase1-viewer/
-index.html # Entry point, loads the Three.js app
-src/
-main.js # Scene, camera, renderer, controls setup
-floorplan.js # Reads floor plan data, generates wall/floor geometry
-floorplanData.js # Hand-authored test floor plan (rooms, walls, dimensions)
-package.json # Dependencies (Three.js, dev server)
+viewer-app/
+  index.html
+  package.json
+  src/
+    main.js              # Scene, camera, controls, click/raycasting, render loop
+    floorplan.js          # Wall/floor geometry generation, floor plan data lookups
+    floorplanData.js       # Hand-authored test floor plan (rooms, walls, openings)
+    materialsData.js        # Available finish colors (walls, floors)
+    furniture.js              # Furniture mesh generation from catalog + placed instances
+    furnitureData.js           # Furniture catalog + placed furniture state
+    ui.js                       # UI panel: wall/floor editing, furniture catalog, selection
 
 ## Roadmap
 
