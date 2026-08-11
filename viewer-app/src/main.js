@@ -1,3 +1,4 @@
+
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -20,7 +21,12 @@ import {
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1a);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(
+  75,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  1000
+);
 camera.position.set(0, 1.6, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -39,26 +45,83 @@ const wallsGroup = roomsGroup.getObjectByName('walls');
 let furnitureGroup = buildFurnitureLayer(placedFurniture);
 scene.add(furnitureGroup);
 
+
+// ============================================================
+// TEMPORARY DEBUG: SHOW FURNITURE OBBs
+// ============================================================
+
+function showDebugOBB(instance, catalogItem) {
+  const { width, depth } = catalogItem.dimensions;
+
+  const geo = new THREE.BoxGeometry(width, 0.1, depth);
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff0000,
+    wireframe: true,
+  });
+
+  const box = new THREE.Mesh(geo, mat);
+
+  box.position.set(
+    instance.position.x,
+    0.05,
+    instance.position.z
+  );
+
+  box.rotation.y = instance.rotationY;
+
+  scene.add(box);
+}
+
+
+// ============================================================
+// FURNITURE REBUILD
+// ============================================================
+
 function rebuildFurniture() {
   scene.remove(furnitureGroup);
+
   furnitureGroup = buildFurnitureLayer(placedFurniture);
+
   scene.add(furnitureGroup);
 
+  // TEMPORARY DEBUG — show the OBB of every placed furniture item
+  for (const instance of placedFurniture) {
+    const catalogItem = furnitureCatalog.find(
+      (c) => c.id === instance.catalogId
+    );
+
+    if (catalogItem) {
+      showDebugOBB(instance, catalogItem);
+    }
+  }
+
   const selectedId = getSelectedFurnitureId();
+
   if (selectedId) {
     const mesh = furnitureGroup.getObjectByName(selectedId);
-    if (mesh) transformControls.attach(mesh);
+
+    if (mesh) {
+      transformControls.attach(mesh);
+    }
   }
 }
 
-const transformControls = new TransformControls(camera, renderer.domElement);
+
+const transformControls = new TransformControls(
+  camera,
+  renderer.domElement
+);
+
 transformControls.setMode('rotate');
 transformControls.showX = false;
 transformControls.showZ = false;
 transformControls.size = 1.5;
+
 scene.add(transformControls);
 
 let dragMode = 'move'; // 'move' | 'rotate'
+let preEditCameraPosition = null;
 
 function updateGizmoVisibility() {
   if (dragMode === 'rotate') {
@@ -76,8 +139,13 @@ transformControls.addEventListener('dragging-changed', (event) => {
 
 transformControls.addEventListener('objectChange', () => {
   const selectedId = getSelectedFurnitureId();
-  const instance = placedFurniture.find((f) => f.instanceId === selectedId);
+
+  const instance = placedFurniture.find(
+    (f) => f.instanceId === selectedId
+  );
+
   const mesh = transformControls.object;
+
   if (instance && mesh) {
     instance.rotationY = mesh.rotation.y;
   }
@@ -91,6 +159,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 function enterEditMode(mesh) {
+  preEditCameraPosition = camera.position.clone();
   walkControls.unlock();
   orbitControls.enabled = true;
   orbitControls.target.copy(mesh.position);
@@ -101,13 +170,18 @@ function enterEditMode(mesh) {
 function exitEditMode() {
   orbitControls.enabled = false;
   transformControls.detach();
-  camera.position.y = 1.6;
+
+  if (preEditCameraPosition) {
+    camera.position.copy(preEditCameraPosition);
+  }
   camera.rotation.set(0, camera.rotation.y, 0);
 }
 
 function findValidSpawnPoint(catalogItem) {
   const forward = new THREE.Vector3();
+
   camera.getWorldDirection(forward);
+
   forward.y = 0;
   forward.normalize();
 
@@ -131,35 +205,59 @@ function findValidSpawnPoint(catalogItem) {
   for (const offset of OFFSETS) {
     const testX = baseX + offset.x;
     const testZ = baseZ + offset.z;
+
     if (!wouldCollide(testX, testZ, 0, catalogItem, null)) {
-      return { x: testX, z: testZ };
+      return {
+        x: testX,
+        z: testZ,
+      };
     }
   }
 
   // Fallback: nothing clear nearby, spawn at the ideal spot anyway
   // rather than blocking the action entirely.
-  return { x: baseX, z: baseZ };
+  return {
+    x: baseX,
+    z: baseZ,
+  };
 }
 
-buildUI(roomsGroup, rebuildFurniture, findValidSpawnPoint, exitEditMode, (mode) => {
-  dragMode = mode;
-  updateGizmoVisibility();
-});
+buildUI(
+  roomsGroup,
+  rebuildFurniture,
+  findValidSpawnPoint,
+  exitEditMode,
+  (mode) => {
+    dragMode = mode;
+    updateGizmoVisibility();
+  }
+);
 
 const light = new THREE.DirectionalLight(0xffffff, 2);
 light.position.set(5, 10, 7);
 scene.add(light);
+
 scene.add(new THREE.AmbientLight(0xffffff, 0.3));
 
 function getAllWallOBBs() {
   const obbs = [];
+
   wallsGroup.traverse((child) => {
-    if (child.isMesh) obbs.push(getWallOBB(child));
+    if (child.isMesh) {
+      obbs.push(getWallOBB(child));
+    }
   });
+
   return obbs;
 }
 
-function wouldCollide(testX, testZ, rotationY, catalogItem, excludeInstanceId) {
+function wouldCollide(
+  testX,
+  testZ,
+  rotationY,
+  catalogItem,
+  excludeInstanceId
+) {
   const testOBB = {
     x: testX,
     z: testZ,
@@ -169,95 +267,205 @@ function wouldCollide(testX, testZ, rotationY, catalogItem, excludeInstanceId) {
   };
 
   for (const wallOBB of getAllWallOBBs()) {
-    if (checkOBBOverlap(testOBB, wallOBB)) return true;
+    if (checkOBBOverlap(testOBB, wallOBB)) {
+      return true;
+    }
   }
 
   for (const other of placedFurniture) {
-    if (other.instanceId === excludeInstanceId) continue;
-    const otherCatalog = furnitureCatalog.find((c) => c.id === other.catalogId);
-    const otherOBB = getFurnitureOBB(other, otherCatalog);
-    if (checkOBBOverlap(testOBB, otherOBB)) return true;
+    if (other.instanceId === excludeInstanceId) {
+      continue;
+    }
+
+    const otherCatalog = furnitureCatalog.find(
+      (c) => c.id === other.catalogId
+    );
+
+    const otherOBB = getFurnitureOBB(
+      other,
+      otherCatalog
+    );
+
+    if (checkOBBOverlap(testOBB, otherOBB)) {
+      return true;
+    }
   }
 
   return false;
 }
 
 const dragRaycaster = new THREE.Raycaster();
-const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+const groundPlane = new THREE.Plane(
+  new THREE.Vector3(0, 1, 0),
+  0
+);
+
 const dragPointerNDC = new THREE.Vector2();
+
 let draggingInstance = null;
 let draggingMesh = null;
 let draggingCatalogItem = null;
 
 function getGroundPointFromMouse(clientX, clientY) {
-  dragPointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
-  dragPointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+  dragPointerNDC.x =
+    (clientX / window.innerWidth) * 2 - 1;
 
-  dragRaycaster.setFromCamera(dragPointerNDC, camera);
+  dragPointerNDC.y =
+    -(clientY / window.innerHeight) * 2 + 1;
+
+  dragRaycaster.setFromCamera(
+    dragPointerNDC,
+    camera
+  );
+
   const point = new THREE.Vector3();
-  dragRaycaster.ray.intersectPlane(groundPlane, point);
+
+  dragRaycaster.ray.intersectPlane(
+    groundPlane,
+    point
+  );
+
   return point;
 }
 
-renderer.domElement.addEventListener('mousedown', (event) => {
-  const selectedId = getSelectedFurnitureId();
-  if (!selectedId || !orbitControls.enabled || dragMode !== 'move') return;
-  if (event.target.closest('#ui-panel')) return;
+renderer.domElement.addEventListener(
+  'mousedown',
+  (event) => {
+    const selectedId = getSelectedFurnitureId();
 
-  dragPointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
-  dragPointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
-  dragRaycaster.setFromCamera(dragPointerNDC, camera);
-
-  const hits = dragRaycaster.intersectObjects(furnitureGroup.children, true);
-  if (hits.length > 0 && hits[0].object.name === selectedId) {
-    draggingInstance = placedFurniture.find((f) => f.instanceId === selectedId);
-    draggingMesh = hits[0].object;
-    draggingCatalogItem = furnitureCatalog.find((c) => c.id === draggingInstance.catalogId);
-    orbitControls.enabled = false;
-  }
-});
-
-window.addEventListener('mousemove', (event) => {
-  if (!draggingInstance) return;
-
-  const groundPoint = getGroundPointFromMouse(event.clientX, event.clientY);
-  const rotationY = draggingInstance.rotationY;
-
-  const startX = draggingInstance.position.x;
-  const startZ = draggingInstance.position.z;
-  const targetX = groundPoint.x;
-  const targetZ = groundPoint.z;
-
-  const totalDist = Math.hypot(targetX - startX, targetZ - startZ);
-  const STEP_SIZE = 0.05;
-  const steps = Math.max(1, Math.ceil(totalDist / STEP_SIZE));
-
-  let lastValidX = startX;
-  let lastValidZ = startZ;
-
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const stepX = startX + (targetX - startX) * t;
-    const stepZ = startZ + (targetZ - startZ) * t;
-
-    if (wouldCollide(stepX, stepZ, rotationY, draggingCatalogItem, draggingInstance.instanceId)) {
-      break;
+    if (
+      !selectedId ||
+      !orbitControls.enabled ||
+      dragMode !== 'move'
+    ) {
+      return;
     }
 
-    lastValidX = stepX;
-    lastValidZ = stepZ;
-  }
+    if (event.target.closest('#ui-panel')) {
+      return;
+    }
 
-  draggingInstance.position.x = lastValidX;
-  draggingInstance.position.z = lastValidZ;
-  draggingMesh.position.x = lastValidX;
-  draggingMesh.position.z = lastValidZ;
-});
+    dragPointerNDC.x =
+      (event.clientX / window.innerWidth) * 2 - 1;
+
+    dragPointerNDC.y =
+      -(event.clientY / window.innerHeight) * 2 + 1;
+
+    dragRaycaster.setFromCamera(
+      dragPointerNDC,
+      camera
+    );
+
+    const hits = dragRaycaster.intersectObjects(
+      furnitureGroup.children,
+      true
+    );
+
+    if (
+      hits.length > 0 &&
+      hits[0].object.name === selectedId
+    ) {
+      // Walk up to the actual top-level object directly under
+      // furnitureGroup (the whole model/box), not whatever inner
+      // sub-part the ray happened to hit first.
+      let topLevelObject = hits[0].object;
+
+      while (
+        topLevelObject.parent &&
+        topLevelObject.parent !== furnitureGroup
+      ) {
+        topLevelObject = topLevelObject.parent;
+      }
+
+      draggingInstance = placedFurniture.find(
+        (f) => f.instanceId === selectedId
+      );
+
+      draggingMesh = topLevelObject;
+
+      draggingCatalogItem = furnitureCatalog.find(
+        (c) => c.id === draggingInstance.catalogId
+      );
+
+      orbitControls.enabled = false;
+    }
+  }
+);
+
+window.addEventListener(
+  'mousemove',
+  (event) => {
+    if (!draggingInstance) {
+      return;
+    }
+
+    const groundPoint = getGroundPointFromMouse(
+      event.clientX,
+      event.clientY
+    );
+
+    const rotationY = draggingInstance.rotationY;
+
+    const startX = draggingInstance.position.x;
+    const startZ = draggingInstance.position.z;
+
+    const targetX = groundPoint.x;
+    const targetZ = groundPoint.z;
+
+    const totalDist = Math.hypot(
+      targetX - startX,
+      targetZ - startZ
+    );
+
+    const STEP_SIZE = 0.05;
+
+    const steps = Math.max(
+      1,
+      Math.ceil(totalDist / STEP_SIZE)
+    );
+
+    let lastValidX = startX;
+    let lastValidZ = startZ;
+
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+
+      const stepX =
+        startX + (targetX - startX) * t;
+
+      const stepZ =
+        startZ + (targetZ - startZ) * t;
+
+      if (
+        wouldCollide(
+          stepX,
+          stepZ,
+          rotationY,
+          draggingCatalogItem,
+          draggingInstance.instanceId
+        )
+      ) {
+        break;
+      }
+
+      lastValidX = stepX;
+      lastValidZ = stepZ;
+    }
+
+    draggingInstance.position.x = lastValidX;
+    draggingInstance.position.z = lastValidZ;
+
+    draggingMesh.position.x = lastValidX;
+    draggingMesh.position.z = lastValidZ;
+  }
+);
 
 window.addEventListener('mouseup', () => {
   if (draggingInstance) {
     orbitControls.enabled = true;
   }
+
   draggingInstance = null;
   draggingMesh = null;
   draggingCatalogItem = null;
@@ -283,10 +491,14 @@ document.addEventListener('click', (event) => {
 
   const furnitureHits = raycaster.intersectObjects(furnitureGroup.children, true);
   if (furnitureHits.length > 0) {
-    const hit = furnitureHits[0].object;
-    selectFurnitureFromScene(hit.name);
-    transformControls.attach(hit);
-    enterEditMode(hit);
+    let topLevelObject = furnitureHits[0].object;
+    while (topLevelObject.parent && topLevelObject.parent !== furnitureGroup) {
+      topLevelObject = topLevelObject.parent;
+    }
+
+    selectFurnitureFromScene(topLevelObject.name);
+    transformControls.attach(topLevelObject);
+    enterEditMode(topLevelObject);
     return;
   }
 
@@ -297,24 +509,23 @@ document.addEventListener('click', (event) => {
     return;
   }
 
-  // NEW: check floors too
-  const floorHits = raycaster
-    .intersectObjects(roomsGroup.children, true)
-    .filter((hit) => hit.object.name === 'floor');
-
-  if (floorHits.length > 0) {
-    // Find which room group this floor mesh belongs to
-    let parent = floorHits[0].object.parent;
-
+  // NEW: check floors and ceilings
+  const surfaceHits = raycaster.intersectObjects(roomsGroup.children, true).filter(
+    (hit) => hit.object.name === 'floor' || hit.object.name === 'ceiling'
+  );
+  if (surfaceHits.length > 0) {
+    let parent = surfaceHits[0].object.parent;
     while (parent && !floorPlan.rooms.some((r) => r.id === parent.name)) {
       parent = parent.parent;
     }
-
     if (parent) {
       selectRoomFromScene(parent.name);
       return;
     }
   }
+
+  deselectAll();
+  transformControls.detach();
 
   deselectAll();
   transformControls.detach();
@@ -330,49 +541,112 @@ document.addEventListener('keydown', (e) => {
 const PLAYER_RADIUS = 0.3;
 const collisionRaycaster = new THREE.Raycaster();
 
-function isBlocked(origin, dirX, dirZ, distance) {
-  if (distance === 0) return false;
-  const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
-  collisionRaycaster.set(origin, dir);
-  collisionRaycaster.far = Math.abs(distance) + PLAYER_RADIUS;
-  const hits = collisionRaycaster.intersectObjects(wallsGroup.children, true);
-  return hits.length > 0 && hits[0].distance < Math.abs(distance) + PLAYER_RADIUS;
+function isBlocked(
+  origin,
+  dirX,
+  dirZ,
+  distance
+) {
+  if (distance === 0) {
+    return false;
+  }
+
+  const dir = new THREE.Vector3(
+    dirX,
+    0,
+    dirZ
+  ).normalize();
+
+  collisionRaycaster.set(
+    origin,
+    dir
+  );
+
+  collisionRaycaster.far =
+    Math.abs(distance) + PLAYER_RADIUS;
+
+  const hits =
+    collisionRaycaster.intersectObjects(
+      wallsGroup.children,
+      true
+    );
+
+  return (
+    hits.length > 0 &&
+    hits[0].distance <
+      Math.abs(distance) + PLAYER_RADIUS
+  );
 }
 
-const move = { forward: false, back: false, left: false, right: false };
+const move = {
+  forward: false,
+  back: false,
+  left: false,
+  right: false,
+};
+
 const MOVE_SPEED = 3;
 
 document.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyW') move.forward = true;
-  if (e.code === 'KeyS') move.back = true;
-  if (e.code === 'KeyA') move.left = true;
-  if (e.code === 'KeyD') move.right = true;
+  if (e.code === 'KeyW') {
+    move.forward = true;
+  }
+
+  if (e.code === 'KeyS') {
+    move.back = true;
+  }
+
+  if (e.code === 'KeyA') {
+    move.left = true;
+  }
+
+  if (e.code === 'KeyD') {
+    move.right = true;
+  }
 });
 
 document.addEventListener('keyup', (e) => {
-  if (e.code === 'KeyW') move.forward = false;
-  if (e.code === 'KeyS') move.back = false;
-  if (e.code === 'KeyA') move.left = false;
-  if (e.code === 'KeyD') move.right = false;
+  if (e.code === 'KeyW') {
+    move.forward = false;
+  }
+
+  if (e.code === 'KeyS') {
+    move.back = false;
+  }
+
+  if (e.code === 'KeyA') {
+    move.left = false;
+  }
+
+  if (e.code === 'KeyD') {
+    move.right = false;
+  }
 });
 
 const clock = new THREE.Clock();
 
 function animate() {
   requestAnimationFrame(animate);
+
   const delta = clock.getDelta();
   const speed = MOVE_SPEED * delta;
 
   if (walkControls.isLocked) {
     const forward = new THREE.Vector3();
+
     camera.getWorldDirection(forward);
+
     forward.y = 0;
     forward.normalize();
 
     const right = new THREE.Vector3();
-    right.crossVectors(forward, camera.up).normalize();
 
-    let dx = 0, dz = 0;
+    right
+      .crossVectors(forward, camera.up)
+      .normalize();
+
+    let dx = 0;
+    let dz = 0;
 
     if (move.forward) {
       dx += forward.x * speed;
@@ -394,22 +668,50 @@ function animate() {
       dz -= right.z * speed;
     }
 
-    const blockedX = isBlocked(camera.position, Math.sign(dx), 0, dx);
-    const blockedZ = isBlocked(camera.position, 0, Math.sign(dz), dz);
+    const blockedX = isBlocked(
+      camera.position,
+      Math.sign(dx),
+      0,
+      dx
+    );
 
-    if (!blockedX) camera.position.x += dx;
-    if (!blockedZ) camera.position.z += dz;
+    const blockedZ = isBlocked(
+      camera.position,
+      0,
+      Math.sign(dz),
+      dz
+    );
+
+    if (!blockedX) {
+      camera.position.x += dx;
+    }
+
+    if (!blockedZ) {
+      camera.position.z += dz;
+    }
   }
 
-  if (orbitControls.enabled) orbitControls.update();
+  if (orbitControls.enabled) {
+    orbitControls.update();
+  }
 
-  renderer.render(scene, camera);
+  renderer.render(
+    scene,
+    camera
+  );
 }
 
 animate();
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.aspect =
+    window.innerWidth / window.innerHeight;
+
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  renderer.setSize(
+    window.innerWidth,
+    window.innerHeight
+  );
 });
+

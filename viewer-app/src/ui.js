@@ -1,7 +1,14 @@
 import { floorPlan } from './floorplanData.js';
 import { finishes } from './materialsData.js';
 import { furnitureCatalog, placedFurniture, addFurnitureInstance } from './furnitureData.js';
-import { applyWallColor, applyFloorColor, applyWallTexture, applyFloorTexture } from './floorplan.js';
+import {
+  applyWallColor,
+  applyFloorColor,
+  applyWallTexture,
+  applyFloorTexture,
+  applyCeilingColor,
+  applyCeilingTexture,
+} from './floorplan.js';
 
 let selectedRoomId = floorPlan.rooms[0].id;
 let selectedWallId = null;
@@ -53,11 +60,12 @@ export function selectWallFromScene(wallId) {
 
 export function selectRoomFromScene(roomId) {
   selectedRoomId = roomId;
-  panelMode = 'wall'; // reuse the same panel (it shows both wall AND floor controls)
+  panelMode = 'wall';
 
   renderPanel(panelEl, roomsGroupRef);
   showPanel();
 }
+
 export function selectFurnitureFromScene(instanceId) {
   selectedFurnitureId = instanceId;
   panelMode = 'furniture';
@@ -191,6 +199,36 @@ function renderWallPanel(panel, roomsGroup) {
     floorSwatches.appendChild(swatch);
   }
   panel.appendChild(floorSwatches);
+
+  const ceilingColorLabel = document.createElement('div');
+  ceilingColorLabel.textContent = `Ceiling Finish — ${currentRoom.label}`;
+  ceilingColorLabel.className = 'ui-section-label';
+  panel.appendChild(ceilingColorLabel);
+
+  const ceilingSwatches = document.createElement('div');
+  ceilingSwatches.className = 'ui-button-row';
+  for (const finish of finishes.floor) {
+    const swatch = document.createElement('button');
+    swatch.className = 'ui-swatch';
+    swatch.title = finish.label;
+
+    if (finish.textureFolder) {
+      swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
+      swatch.style.backgroundSize = 'cover';
+    } else {
+      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+    }
+
+    swatch.addEventListener('click', () => {
+      if (finish.textureFolder) {
+        applyCeilingTexture(roomsGroup, selectedRoomId, finish.textureFolder);
+      } else {
+        applyCeilingColor(roomsGroup, selectedRoomId, finish.color);
+      }
+    });
+    ceilingSwatches.appendChild(swatch);
+  }
+  panel.appendChild(ceilingSwatches);
 
   const addLabel = document.createElement('div');
   addLabel.textContent = 'Add Furniture';

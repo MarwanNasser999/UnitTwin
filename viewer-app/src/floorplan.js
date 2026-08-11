@@ -56,7 +56,23 @@ function buildWall(wallData) {
   return group;
 }
 
-function createFloor(corners) {
+function buildRoomShape(corners) {
+  const shape = new THREE.Shape();
+  shape.moveTo(corners[0].x, corners[0].z);
+  for (let i = 1; i < corners.length; i++) {
+    shape.lineTo(corners[i].x, corners[i].z);
+  }
+  shape.lineTo(corners[0].x, corners[0].z);
+  return shape;
+}
+
+/**
+ * Generates proper UV coordinates for a ShapeGeometry based on each
+ * vertex's real X/Z position, normalized against the room's bounds.
+ * Without this, ShapeGeometry's default UVs don't tile textures
+ * sensibly for non-rectangular shapes.
+ */
+function applyShapeUVs(geometry, corners) {
   const xs = corners.map((c) => c.x);
   const zs = corners.map((c) => c.z);
   const minX = Math.min(...xs);
@@ -64,26 +80,58 @@ function createFloor(corners) {
   const minZ = Math.min(...zs);
   const maxZ = Math.max(...zs);
 
-  const width = maxX - minX;
-  const depth = maxZ - minZ;
-  const centerX = (minX + maxX) / 2;
-  const centerZ = (minZ + maxZ) / 2;
+  const width = maxX - minX || 1;
+  const depth = maxZ - minZ || 1;
 
-  const geometry = new THREE.PlaneGeometry(width, depth);
+  const position = geometry.attributes.position;
+  const uv = new Float32Array(position.count * 2);
+
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i); // ShapeGeometry builds flat on X/Y before we rotate it
+
+    uv[i * 2] = (x - minX) / width;
+    uv[i * 2 + 1] = (y - minZ) / depth;
+  }
+
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+function createFloor(corners) {
+  const shape = buildRoomShape(corners);
+  const geometry = new THREE.ShapeGeometry(shape);
+  applyShapeUVs(geometry, corners);
+
   const material = new THREE.MeshStandardMaterial({
     color: 0x999999,
     side: THREE.DoubleSide,
   });
   const floor = new THREE.Mesh(geometry, material);
   floor.name = 'floor';
-
   floor.rotation.x = -Math.PI / 2;
-  floor.position.set(centerX, 0, centerZ);
 
   return floor;
 }
 
+function createCeiling(corners, wallHeight) {
+  const shape = buildRoomShape(corners);
+  const geometry = new THREE.ShapeGeometry(shape);
+  applyShapeUVs(geometry, corners);
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+  });
+  const ceiling = new THREE.Mesh(geometry, material);
+  ceiling.name = 'ceiling';
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.y = wallHeight;
+
+  return ceiling;
+}
+let currentFloorPlanRef = null;
 export function buildFloorPlan(floorPlan) {
+  currentFloorPlanRef = floorPlan;
   const root = new THREE.Group();
 
   const wallsGroup = new THREE.Group();
@@ -97,6 +145,7 @@ export function buildFloorPlan(floorPlan) {
     const roomGroup = new THREE.Group();
     roomGroup.name = roomData.id;
     roomGroup.add(createFloor(roomData.corners));
+    roomGroup.add(createCeiling(roomData.corners, WALL_HEIGHT));
     root.add(roomGroup);
   }
 
@@ -143,11 +192,47 @@ export function applyFloorTexture(floorPlanRoot, roomId, textureFolder) {
   const room = floorPlanRoot.getObjectByName(roomId);
   if (!room) return;
 
+  const roomData = currentFloorPlanRef.rooms.find((r) => r.id === roomId);
+  const xs = roomData.corners.map((c) => c.x);
+  const zs = roomData.corners.map((c) => c.z);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const depth = Math.max(...zs) - Math.min(...zs);
+
   room.traverse((child) => {
     if (child.isMesh && child.name === 'floor') {
-      const width = child.geometry.parameters.width;
-      const depth = child.geometry.parameters.height;
       applyPBRTexture(child, textureFolder, width, depth, 0.5);
+    }
+  });
+}
+
+export function applyCeilingTexture(floorPlanRoot, roomId, textureFolder) {
+  const room = floorPlanRoot.getObjectByName(roomId);
+  if (!room) return;
+
+  const roomData = currentFloorPlanRef.rooms.find((r) => r.id === roomId);
+  const xs = roomData.corners.map((c) => c.x);
+  const zs = roomData.corners.map((c) => c.z);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const depth = Math.max(...zs) - Math.min(...zs);
+
+  room.traverse((child) => {
+    if (child.isMesh && child.name === 'ceiling') {
+      applyPBRTexture(child, textureFolder, width, depth, 0.5);
+    }
+  });
+}
+
+export function applyCeilingColor(floorPlanRoot, roomId, colorHex) {
+  const room = floorPlanRoot.getObjectByName(roomId);
+  if (!room) return;
+
+  room.traverse((child) => {
+    if (child.isMesh && child.name === 'ceiling') {
+      child.material.map = null;
+      child.material.normalMap = null;
+      child.material.roughnessMap = null;
+      child.material.color.set(colorHex);
+      child.material.needsUpdate = true;
     }
   });
 }
