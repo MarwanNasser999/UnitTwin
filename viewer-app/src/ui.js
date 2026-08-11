@@ -1,7 +1,7 @@
 import { floorPlan } from './floorplanData.js';
 import { finishes } from './materialsData.js';
 import { furnitureCatalog, placedFurniture, addFurnitureInstance } from './furnitureData.js';
-import { applyWallColor, applyFloorColor } from './floorplan.js';
+import { applyWallColor, applyFloorColor, applyWallTexture, applyFloorTexture } from './floorplan.js';
 
 let selectedRoomId = floorPlan.rooms[0].id;
 let selectedWallId = null;
@@ -51,6 +51,13 @@ export function selectWallFromScene(wallId) {
   showPanel();
 }
 
+export function selectRoomFromScene(roomId) {
+  selectedRoomId = roomId;
+  panelMode = 'wall'; // reuse the same panel (it shows both wall AND floor controls)
+
+  renderPanel(panelEl, roomsGroupRef);
+  showPanel();
+}
 export function selectFurnitureFromScene(instanceId) {
   selectedFurnitureId = instanceId;
   panelMode = 'furniture';
@@ -124,8 +131,8 @@ function renderWallPanel(panel, roomsGroup) {
 
   const wallColorLabel = document.createElement('div');
   wallColorLabel.textContent = selectedWallId
-    ? `Wall Color — ${floorPlan.walls.find((w) => w.id === selectedWallId).label}`
-    : 'Select a wall above (or click one in the scene) to change its color';
+    ? `Wall Finish — ${floorPlan.walls.find((w) => w.id === selectedWallId).label}`
+    : 'Select a wall above (or click one in the scene) to change its finish';
   wallColorLabel.className = 'ui-section-label';
   panel.appendChild(wallColorLabel);
 
@@ -134,18 +141,29 @@ function renderWallPanel(panel, roomsGroup) {
   for (const finish of finishes.wall) {
     const swatch = document.createElement('button');
     swatch.className = 'ui-swatch';
-    swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
     swatch.title = finish.label;
     swatch.disabled = !selectedWallId;
+
+    if (finish.textureFolder) {
+      swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
+      swatch.style.backgroundSize = 'cover';
+    } else {
+      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+    }
+
     swatch.addEventListener('click', () => {
-      applyWallColor(roomsGroup, selectedWallId, finish.color);
+      if (finish.textureFolder) {
+        applyWallTexture(roomsGroup, selectedWallId, finish.textureFolder);
+      } else {
+        applyWallColor(roomsGroup, selectedWallId, finish.color);
+      }
     });
     wallSwatches.appendChild(swatch);
   }
   panel.appendChild(wallSwatches);
 
   const floorColorLabel = document.createElement('div');
-  floorColorLabel.textContent = `Floor Color — ${currentRoom.label}`;
+  floorColorLabel.textContent = `Floor Finish — ${currentRoom.label}`;
   floorColorLabel.className = 'ui-section-label';
   panel.appendChild(floorColorLabel);
 
@@ -154,10 +172,21 @@ function renderWallPanel(panel, roomsGroup) {
   for (const finish of finishes.floor) {
     const swatch = document.createElement('button');
     swatch.className = 'ui-swatch';
-    swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
     swatch.title = finish.label;
+
+    if (finish.textureFolder) {
+      swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
+      swatch.style.backgroundSize = 'cover';
+    } else {
+      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+    }
+
     swatch.addEventListener('click', () => {
-      applyFloorColor(roomsGroup, selectedRoomId, finish.color);
+      if (finish.textureFolder) {
+        applyFloorTexture(roomsGroup, selectedRoomId, finish.textureFolder);
+      } else {
+        applyFloorColor(roomsGroup, selectedRoomId, finish.color);
+      }
     });
     floorSwatches.appendChild(swatch);
   }
@@ -175,7 +204,7 @@ function renderWallPanel(panel, roomsGroup) {
     btn.textContent = item.label;
     btn.className = 'ui-btn';
     btn.addEventListener('click', () => {
-      const spawnPoint = getSpawnPointCallback(item); // pass the catalog item now
+      const spawnPoint = getSpawnPointCallback(item);
       addFurnitureInstance(item.id, selectedRoomId, spawnPoint);
 
       if (onFurnitureChanged) onFurnitureChanged();

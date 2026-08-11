@@ -10,6 +10,7 @@ import { checkOBBOverlap } from './collision.js';
 import {
   buildUI,
   selectWallFromScene,
+  selectRoomFromScene,
   selectFurnitureFromScene,
   getSelectedFurnitureId,
   deselectAll,
@@ -117,8 +118,14 @@ function findValidSpawnPoint(catalogItem) {
   // if it's occupied.
   const OFFSETS = [
     { x: 0, z: 0 },
-    { x: 0.6, z: 0 }, { x: -0.6, z: 0 }, { x: 0, z: 0.6 }, { x: 0, z: -0.6 },
-    { x: 0.6, z: 0.6 }, { x: -0.6, z: 0.6 }, { x: 0.6, z: -0.6 }, { x: -0.6, z: -0.6 },
+    { x: 0.6, z: 0 },
+    { x: -0.6, z: 0 },
+    { x: 0, z: 0.6 },
+    { x: 0, z: -0.6 },
+    { x: 0.6, z: 0.6 },
+    { x: -0.6, z: 0.6 },
+    { x: 0.6, z: -0.6 },
+    { x: -0.6, z: -0.6 },
   ];
 
   for (const offset of OFFSETS) {
@@ -290,6 +297,25 @@ document.addEventListener('click', (event) => {
     return;
   }
 
+  // NEW: check floors too
+  const floorHits = raycaster
+    .intersectObjects(roomsGroup.children, true)
+    .filter((hit) => hit.object.name === 'floor');
+
+  if (floorHits.length > 0) {
+    // Find which room group this floor mesh belongs to
+    let parent = floorHits[0].object.parent;
+
+    while (parent && !floorPlan.rooms.some((r) => r.id === parent.name)) {
+      parent = parent.parent;
+    }
+
+    if (parent) {
+      selectRoomFromScene(parent.name);
+      return;
+    }
+  }
+
   deselectAll();
   transformControls.detach();
 });
@@ -342,17 +368,35 @@ function animate() {
     camera.getWorldDirection(forward);
     forward.y = 0;
     forward.normalize();
+
     const right = new THREE.Vector3();
     right.crossVectors(forward, camera.up).normalize();
 
     let dx = 0, dz = 0;
-    if (move.forward) { dx += forward.x * speed; dz += forward.z * speed; }
-    if (move.back)    { dx -= forward.x * speed; dz -= forward.z * speed; }
-    if (move.right)   { dx += right.x * speed;   dz += right.z * speed; }
-    if (move.left)    { dx -= right.x * speed;   dz -= right.z * speed; }
+
+    if (move.forward) {
+      dx += forward.x * speed;
+      dz += forward.z * speed;
+    }
+
+    if (move.back) {
+      dx -= forward.x * speed;
+      dz -= forward.z * speed;
+    }
+
+    if (move.right) {
+      dx += right.x * speed;
+      dz += right.z * speed;
+    }
+
+    if (move.left) {
+      dx -= right.x * speed;
+      dz -= right.z * speed;
+    }
 
     const blockedX = isBlocked(camera.position, Math.sign(dx), 0, dx);
     const blockedZ = isBlocked(camera.position, 0, Math.sign(dz), dz);
+
     if (!blockedX) camera.position.x += dx;
     if (!blockedZ) camera.position.z += dz;
   }
@@ -361,6 +405,7 @@ function animate() {
 
   renderer.render(scene, camera);
 }
+
 animate();
 
 window.addEventListener('resize', () => {

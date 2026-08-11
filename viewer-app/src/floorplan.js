@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { applyPBRTexture } from './textures.js';
 
 const WALL_HEIGHT = 2.5;
 const WALL_THICKNESS = 0.1;
@@ -105,7 +106,11 @@ export function buildFloorPlan(floorPlan) {
 export function applyWallColor(floorPlanRoot, wallId, colorHex) {
   floorPlanRoot.traverse((child) => {
     if (child.isMesh && child.name === wallId) {
+      child.material.map = null;
+      child.material.normalMap = null;
+      child.material.roughnessMap = null;
       child.material.color.set(colorHex);
+      child.material.needsUpdate = true;
     }
   });
 }
@@ -116,15 +121,37 @@ export function applyFloorColor(floorPlanRoot, roomId, colorHex) {
 
   room.traverse((child) => {
     if (child.isMesh && child.name === 'floor') {
+      child.material.map = null;
+      child.material.normalMap = null;
+      child.material.roughnessMap = null;
       child.material.color.set(colorHex);
+      child.material.needsUpdate = true;
     }
   });
 }
 
-/**
- * Returns an OBB ({x, z, halfWidth, halfDepth, rotation}) for a wall
- * mesh, derived from its actual BoxGeometry dimensions and transform.
- */
+export function applyWallTexture(floorPlanRoot, wallId, textureFolder) {
+  floorPlanRoot.traverse((child) => {
+    if (child.isMesh && child.name === wallId) {
+      const width = child.geometry.parameters.width;
+      applyPBRTexture(child, textureFolder, width, WALL_HEIGHT, 0.5);
+    }
+  });
+}
+
+export function applyFloorTexture(floorPlanRoot, roomId, textureFolder) {
+  const room = floorPlanRoot.getObjectByName(roomId);
+  if (!room) return;
+
+  room.traverse((child) => {
+    if (child.isMesh && child.name === 'floor') {
+      const width = child.geometry.parameters.width;
+      const depth = child.geometry.parameters.height;
+      applyPBRTexture(child, textureFolder, width, depth, 0.5);
+    }
+  });
+}
+
 export function getWallOBB(wallMesh) {
   return {
     x: wallMesh.position.x,
