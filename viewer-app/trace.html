@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>UnitTwin — Trace Tool</title>
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #1a1a1a;
+      color: white;
+      font-family: sans-serif;
+    }
+
+    #toolbar {
+      padding: 12px;
+      background: #222;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #canvas-container {
+      overflow: auto;
+      width: 100vw;
+      height: calc(100vh - 56px);
+    }
+
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="toolbar">
+
+    <!-- Load floor plan -->
+    <input
+      type="file"
+      id="image-input"
+      accept="image/*"
+    />
+
+    <!-- Room controls -->
+    <button id="finish-room-btn">
+      Finish Room
+    </button>
+
+    <button id="recalibrate-btn">
+      Recalibrate
+    </button>
+
+    <!-- Status -->
+    <span id="status">
+      Load a floor plan image to begin.
+    </span>
+
+  </div>
+
+
+  <div id="canvas-container">
+
+    <canvas id="trace-canvas"></canvas>
+
+  </div>
+
+
+  <script
+    type="module"
+    src="/src/trace/traceMain.js"
+  ></script>
+
+</body>
+
+</html>
