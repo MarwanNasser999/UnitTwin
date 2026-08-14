@@ -1,86 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
-
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  />
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UnitTwin — Trace Tool</title>
-
   <style>
-    html,
-    body {
+    html, body {
       margin: 0;
       padding: 0;
       background: #1a1a1a;
       color: white;
       font-family: sans-serif;
     }
-
     #toolbar {
       padding: 12px;
       background: #222;
       display: flex;
       gap: 12px;
       align-items: center;
+      flex-wrap: wrap;
     }
-
     #canvas-container {
       overflow: auto;
       width: 100vw;
       height: calc(100vh - 56px);
     }
-
     canvas {
       display: block;
     }
+    button {
+      padding: 6px 12px;
+      cursor: pointer;
+    }
   </style>
 </head>
-
 <body>
 
   <div id="toolbar">
-
-    <!-- Load floor plan -->
-    <input
-      type="file"
-      id="image-input"
-      accept="image/*"
-    />
-
-    <!-- Room controls -->
-    <button id="finish-room-btn">
-      Finish Room
-    </button>
-
-    <button id="recalibrate-btn">
-      Recalibrate
-    </button>
-
-    <!-- Status -->
-    <span id="status">
-      Load a floor plan image to begin.
-    </span>
-
+    <input type="file" id="image-input" accept="image/*" />
+    <button id="add-room-btn">Add Room</button>
+    <button id="finish-room-btn">Finish This Room</button>
+    <button id="cancel-verify-btn" style="display: none;">Cancel</button>
+    <button id="recalibrate-btn">Recalibrate</button>
+    <button id="preview-3d-btn">Preview in 3D</button>
+    <span id="status">Load a floor plan image to begin.</span>
   </div>
-
 
   <div id="canvas-container">
-
     <canvas id="trace-canvas"></canvas>
-
   </div>
 
-
-  <script
-    type="module"
-    src="/src/trace/traceMain.js"
-  ></script>
+  <script type="module" src="/src/trace/traceMain.js"></script>
 
 </body>
-
 </html>

@@ -1,10 +1,9 @@
-
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { buildFloorPlan, getWallOBB } from './floorplan.js';
-import { floorPlan } from './floorplanData.js';
+import { floorPlan as defaultFloorPlan } from './floorplanData.js';
 import { buildFurnitureLayer, getFurnitureOBB } from './furniture.js';
 import { placedFurniture, furnitureCatalog } from './furnitureData.js';
 import { checkOBBOverlap } from './collision.js';
@@ -18,16 +17,50 @@ import {
   togglePanel,
 } from './ui.js';
 
+function getActiveFloorPlan() {
+  const saved = localStorage.getItem('unittwin_trace_preview');
+  if (saved) {
+    try {
+      return JSON.parse(saved);
+    } catch (e) {
+      console.error('Failed to parse saved trace data, using default.', e);
+    }
+  }
+  return defaultFloorPlan;
+}
+
+const floorPlan = getActiveFloorPlan();
+
+/**
+ * Calculates a sensible camera spawn point — the center of all
+ * traced/hand-typed rooms — instead of a hardcoded world origin.
+ * Without this, tracing a room far from (0,0) leaves you spawning
+ * in empty space, nowhere near the actual floor plan.
+ */
+function calculateFloorPlanCenter(plan) {
+  const allCorners = plan.rooms.flatMap((r) => r.corners);
+  if (allCorners.length === 0) return { x: 0, z: 0 };
+
+  const xs = allCorners.map((c) => c.x);
+  const zs = allCorners.map((c) => c.z);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    z: (Math.min(...zs) + Math.max(...zs)) / 2,
+  };
+}
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1a);
 
 const camera = new THREE.PerspectiveCamera(
-  75,
+  60, // was 75
   window.innerWidth / window.innerHeight,
   0.1,
   1000
 );
-camera.position.set(0, 1.6, 0);
+
+const spawnCenter = calculateFloorPlanCenter(floorPlan);
+camera.position.set(spawnCenter.x, 1.6, spawnCenter.z);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -45,82 +78,26 @@ const wallsGroup = roomsGroup.getObjectByName('walls');
 let furnitureGroup = buildFurnitureLayer(placedFurniture);
 scene.add(furnitureGroup);
 
-
-// ============================================================
-// TEMPORARY DEBUG: SHOW FURNITURE OBBs
-// ============================================================
-
-function showDebugOBB(instance, catalogItem) {
-  const { width, depth } = catalogItem.dimensions;
-
-  const geo = new THREE.BoxGeometry(width, 0.1, depth);
-
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xff0000,
-    wireframe: true,
-  });
-
-  const box = new THREE.Mesh(geo, mat);
-
-  box.position.set(
-    instance.position.x,
-    0.05,
-    instance.position.z
-  );
-
-  box.rotation.y = instance.rotationY;
-
-  scene.add(box);
-}
-
-
-// ============================================================
-// FURNITURE REBUILD
-// ============================================================
-
 function rebuildFurniture() {
   scene.remove(furnitureGroup);
-
   furnitureGroup = buildFurnitureLayer(placedFurniture);
-
   scene.add(furnitureGroup);
 
-  // TEMPORARY DEBUG — show the OBB of every placed furniture item
-  for (const instance of placedFurniture) {
-    const catalogItem = furnitureCatalog.find(
-      (c) => c.id === instance.catalogId
-    );
-
-    if (catalogItem) {
-      showDebugOBB(instance, catalogItem);
-    }
-  }
-
   const selectedId = getSelectedFurnitureId();
-
   if (selectedId) {
-    const mesh = furnitureGroup.getObjectByName(selectedId);
-
-    if (mesh) {
-      transformControls.attach(mesh);
-    }
+    const mesh = furnitureGroup.children.find((child) => child.name === selectedId);
+    if (mesh) transformControls.attach(mesh);
   }
 }
 
-
-const transformControls = new TransformControls(
-  camera,
-  renderer.domElement
-);
-
+const transformControls = new TransformControls(camera, renderer.domElement);
 transformControls.setMode('rotate');
 transformControls.showX = false;
 transformControls.showZ = false;
 transformControls.size = 1.5;
-
 scene.add(transformControls);
 
-let dragMode = 'move'; // 'move' | 'rotate'
+let dragMode = 'move';
 let preEditCameraPosition = null;
 
 function updateGizmoVisibility() {
@@ -139,13 +116,8 @@ transformControls.addEventListener('dragging-changed', (event) => {
 
 transformControls.addEventListener('objectChange', () => {
   const selectedId = getSelectedFurnitureId();
-
-  const instance = placedFurniture.find(
-    (f) => f.instanceId === selectedId
-  );
-
+  const instance = placedFurniture.find((f) => f.instanceId === selectedId);
   const mesh = transformControls.object;
-
   if (instance && mesh) {
     instance.rotationY = mesh.rotation.y;
   }
@@ -179,47 +151,28 @@ function exitEditMode() {
 
 function findValidSpawnPoint(catalogItem) {
   const forward = new THREE.Vector3();
-
   camera.getWorldDirection(forward);
-
   forward.y = 0;
   forward.normalize();
 
   const baseX = camera.position.x + forward.x * 1.5;
   const baseZ = camera.position.z + forward.z * 1.5;
 
-  // Try the ideal spot first, then spiral outward in small steps
-  // if it's occupied.
   const OFFSETS = [
     { x: 0, z: 0 },
-    { x: 0.6, z: 0 },
-    { x: -0.6, z: 0 },
-    { x: 0, z: 0.6 },
-    { x: 0, z: -0.6 },
-    { x: 0.6, z: 0.6 },
-    { x: -0.6, z: 0.6 },
-    { x: 0.6, z: -0.6 },
-    { x: -0.6, z: -0.6 },
+    { x: 0.6, z: 0 }, { x: -0.6, z: 0 }, { x: 0, z: 0.6 }, { x: 0, z: -0.6 },
+    { x: 0.6, z: 0.6 }, { x: -0.6, z: 0.6 }, { x: 0.6, z: -0.6 }, { x: -0.6, z: -0.6 },
   ];
 
   for (const offset of OFFSETS) {
     const testX = baseX + offset.x;
     const testZ = baseZ + offset.z;
-
     if (!wouldCollide(testX, testZ, 0, catalogItem, null)) {
-      return {
-        x: testX,
-        z: testZ,
-      };
+      return { x: testX, z: testZ };
     }
   }
 
-  // Fallback: nothing clear nearby, spawn at the ideal spot anyway
-  // rather than blocking the action entirely.
-  return {
-    x: baseX,
-    z: baseZ,
-  };
+  return { x: baseX, z: baseZ };
 }
 
 buildUI(
@@ -236,28 +189,17 @@ buildUI(
 const light = new THREE.DirectionalLight(0xffffff, 2);
 light.position.set(5, 10, 7);
 scene.add(light);
-
 scene.add(new THREE.AmbientLight(0xffffff, 0.3));
 
 function getAllWallOBBs() {
   const obbs = [];
-
   wallsGroup.traverse((child) => {
-    if (child.isMesh) {
-      obbs.push(getWallOBB(child));
-    }
+    if (child.isMesh) obbs.push(getWallOBB(child));
   });
-
   return obbs;
 }
 
-function wouldCollide(
-  testX,
-  testZ,
-  rotationY,
-  catalogItem,
-  excludeInstanceId
-) {
+function wouldCollide(testX, testZ, rotationY, catalogItem, excludeInstanceId) {
   const testOBB = {
     x: testX,
     z: testZ,
@@ -267,205 +209,100 @@ function wouldCollide(
   };
 
   for (const wallOBB of getAllWallOBBs()) {
-    if (checkOBBOverlap(testOBB, wallOBB)) {
-      return true;
-    }
+    if (checkOBBOverlap(testOBB, wallOBB)) return true;
   }
 
   for (const other of placedFurniture) {
-    if (other.instanceId === excludeInstanceId) {
-      continue;
-    }
-
-    const otherCatalog = furnitureCatalog.find(
-      (c) => c.id === other.catalogId
-    );
-
-    const otherOBB = getFurnitureOBB(
-      other,
-      otherCatalog
-    );
-
-    if (checkOBBOverlap(testOBB, otherOBB)) {
-      return true;
-    }
+    if (other.instanceId === excludeInstanceId) continue;
+    const otherCatalog = furnitureCatalog.find((c) => c.id === other.catalogId);
+    const otherOBB = getFurnitureOBB(other, otherCatalog);
+    if (checkOBBOverlap(testOBB, otherOBB)) return true;
   }
 
   return false;
 }
 
 const dragRaycaster = new THREE.Raycaster();
-
-const groundPlane = new THREE.Plane(
-  new THREE.Vector3(0, 1, 0),
-  0
-);
-
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const dragPointerNDC = new THREE.Vector2();
-
 let draggingInstance = null;
 let draggingMesh = null;
 let draggingCatalogItem = null;
 
 function getGroundPointFromMouse(clientX, clientY) {
-  dragPointerNDC.x =
-    (clientX / window.innerWidth) * 2 - 1;
+  dragPointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
+  dragPointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
 
-  dragPointerNDC.y =
-    -(clientY / window.innerHeight) * 2 + 1;
-
-  dragRaycaster.setFromCamera(
-    dragPointerNDC,
-    camera
-  );
-
+  dragRaycaster.setFromCamera(dragPointerNDC, camera);
   const point = new THREE.Vector3();
-
-  dragRaycaster.ray.intersectPlane(
-    groundPlane,
-    point
-  );
-
+  dragRaycaster.ray.intersectPlane(groundPlane, point);
   return point;
 }
 
-renderer.domElement.addEventListener(
-  'mousedown',
-  (event) => {
-    const selectedId = getSelectedFurnitureId();
+renderer.domElement.addEventListener('mousedown', (event) => {
+  const selectedId = getSelectedFurnitureId();
+  if (!selectedId || !orbitControls.enabled || dragMode !== 'move') return;
+  if (event.target.closest('#ui-panel')) return;
 
-    if (
-      !selectedId ||
-      !orbitControls.enabled ||
-      dragMode !== 'move'
-    ) {
-      return;
+  dragPointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
+  dragPointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  dragRaycaster.setFromCamera(dragPointerNDC, camera);
+
+  const hits = dragRaycaster.intersectObjects(furnitureGroup.children, true);
+  if (hits.length > 0 && hits[0].object.name === selectedId) {
+    let topLevelObject = hits[0].object;
+    while (topLevelObject.parent && topLevelObject.parent !== furnitureGroup) {
+      topLevelObject = topLevelObject.parent;
     }
 
-    if (event.target.closest('#ui-panel')) {
-      return;
-    }
-
-    dragPointerNDC.x =
-      (event.clientX / window.innerWidth) * 2 - 1;
-
-    dragPointerNDC.y =
-      -(event.clientY / window.innerHeight) * 2 + 1;
-
-    dragRaycaster.setFromCamera(
-      dragPointerNDC,
-      camera
-    );
-
-    const hits = dragRaycaster.intersectObjects(
-      furnitureGroup.children,
-      true
-    );
-
-    if (
-      hits.length > 0 &&
-      hits[0].object.name === selectedId
-    ) {
-      // Walk up to the actual top-level object directly under
-      // furnitureGroup (the whole model/box), not whatever inner
-      // sub-part the ray happened to hit first.
-      let topLevelObject = hits[0].object;
-
-      while (
-        topLevelObject.parent &&
-        topLevelObject.parent !== furnitureGroup
-      ) {
-        topLevelObject = topLevelObject.parent;
-      }
-
-      draggingInstance = placedFurniture.find(
-        (f) => f.instanceId === selectedId
-      );
-
-      draggingMesh = topLevelObject;
-
-      draggingCatalogItem = furnitureCatalog.find(
-        (c) => c.id === draggingInstance.catalogId
-      );
-
-      orbitControls.enabled = false;
-    }
+    draggingInstance = placedFurniture.find((f) => f.instanceId === selectedId);
+    draggingMesh = topLevelObject;
+    draggingCatalogItem = furnitureCatalog.find((c) => c.id === draggingInstance.catalogId);
+    orbitControls.enabled = false;
   }
-);
+});
 
-window.addEventListener(
-  'mousemove',
-  (event) => {
-    if (!draggingInstance) {
-      return;
+window.addEventListener('mousemove', (event) => {
+  if (!draggingInstance) return;
+
+  const groundPoint = getGroundPointFromMouse(event.clientX, event.clientY);
+  const rotationY = draggingInstance.rotationY;
+
+  const startX = draggingInstance.position.x;
+  const startZ = draggingInstance.position.z;
+  const targetX = groundPoint.x;
+  const targetZ = groundPoint.z;
+
+  const totalDist = Math.hypot(targetX - startX, targetZ - startZ);
+  const STEP_SIZE = 0.05;
+  const steps = Math.max(1, Math.ceil(totalDist / STEP_SIZE));
+
+  let lastValidX = startX;
+  let lastValidZ = startZ;
+
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const stepX = startX + (targetX - startX) * t;
+    const stepZ = startZ + (targetZ - startZ) * t;
+
+    if (wouldCollide(stepX, stepZ, rotationY, draggingCatalogItem, draggingInstance.instanceId)) {
+      break;
     }
 
-    const groundPoint = getGroundPointFromMouse(
-      event.clientX,
-      event.clientY
-    );
-
-    const rotationY = draggingInstance.rotationY;
-
-    const startX = draggingInstance.position.x;
-    const startZ = draggingInstance.position.z;
-
-    const targetX = groundPoint.x;
-    const targetZ = groundPoint.z;
-
-    const totalDist = Math.hypot(
-      targetX - startX,
-      targetZ - startZ
-    );
-
-    const STEP_SIZE = 0.05;
-
-    const steps = Math.max(
-      1,
-      Math.ceil(totalDist / STEP_SIZE)
-    );
-
-    let lastValidX = startX;
-    let lastValidZ = startZ;
-
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-
-      const stepX =
-        startX + (targetX - startX) * t;
-
-      const stepZ =
-        startZ + (targetZ - startZ) * t;
-
-      if (
-        wouldCollide(
-          stepX,
-          stepZ,
-          rotationY,
-          draggingCatalogItem,
-          draggingInstance.instanceId
-        )
-      ) {
-        break;
-      }
-
-      lastValidX = stepX;
-      lastValidZ = stepZ;
-    }
-
-    draggingInstance.position.x = lastValidX;
-    draggingInstance.position.z = lastValidZ;
-
-    draggingMesh.position.x = lastValidX;
-    draggingMesh.position.z = lastValidZ;
+    lastValidX = stepX;
+    lastValidZ = stepZ;
   }
-);
+
+  draggingInstance.position.x = lastValidX;
+  draggingInstance.position.z = lastValidZ;
+  draggingMesh.position.x = lastValidX;
+  draggingMesh.position.z = lastValidZ;
+});
 
 window.addEventListener('mouseup', () => {
   if (draggingInstance) {
     orbitControls.enabled = true;
   }
-
   draggingInstance = null;
   draggingMesh = null;
   draggingCatalogItem = null;
@@ -509,7 +346,6 @@ document.addEventListener('click', (event) => {
     return;
   }
 
-  // NEW: check floors and ceilings
   const surfaceHits = raycaster.intersectObjects(roomsGroup.children, true).filter(
     (hit) => hit.object.name === 'floor' || hit.object.name === 'ceiling'
   );
@@ -526,9 +362,6 @@ document.addEventListener('click', (event) => {
 
   deselectAll();
   transformControls.detach();
-
-  deselectAll();
-  transformControls.detach();
 });
 
 document.addEventListener('keydown', (e) => {
@@ -541,177 +374,67 @@ document.addEventListener('keydown', (e) => {
 const PLAYER_RADIUS = 0.3;
 const collisionRaycaster = new THREE.Raycaster();
 
-function isBlocked(
-  origin,
-  dirX,
-  dirZ,
-  distance
-) {
-  if (distance === 0) {
-    return false;
-  }
-
-  const dir = new THREE.Vector3(
-    dirX,
-    0,
-    dirZ
-  ).normalize();
-
-  collisionRaycaster.set(
-    origin,
-    dir
-  );
-
-  collisionRaycaster.far =
-    Math.abs(distance) + PLAYER_RADIUS;
-
-  const hits =
-    collisionRaycaster.intersectObjects(
-      wallsGroup.children,
-      true
-    );
-
-  return (
-    hits.length > 0 &&
-    hits[0].distance <
-      Math.abs(distance) + PLAYER_RADIUS
-  );
+function isBlocked(origin, dirX, dirZ, distance) {
+  if (distance === 0) return false;
+  const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
+  collisionRaycaster.set(origin, dir);
+  collisionRaycaster.far = Math.abs(distance) + PLAYER_RADIUS;
+  const hits = collisionRaycaster.intersectObjects(wallsGroup.children, true);
+  return hits.length > 0 && hits[0].distance < Math.abs(distance) + PLAYER_RADIUS;
 }
 
-const move = {
-  forward: false,
-  back: false,
-  left: false,
-  right: false,
-};
-
+const move = { forward: false, back: false, left: false, right: false };
 const MOVE_SPEED = 3;
 
 document.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyW') {
-    move.forward = true;
-  }
-
-  if (e.code === 'KeyS') {
-    move.back = true;
-  }
-
-  if (e.code === 'KeyA') {
-    move.left = true;
-  }
-
-  if (e.code === 'KeyD') {
-    move.right = true;
-  }
+  if (e.code === 'KeyW') move.forward = true;
+  if (e.code === 'KeyS') move.back = true;
+  if (e.code === 'KeyA') move.left = true;
+  if (e.code === 'KeyD') move.right = true;
 });
 
 document.addEventListener('keyup', (e) => {
-  if (e.code === 'KeyW') {
-    move.forward = false;
-  }
-
-  if (e.code === 'KeyS') {
-    move.back = false;
-  }
-
-  if (e.code === 'KeyA') {
-    move.left = false;
-  }
-
-  if (e.code === 'KeyD') {
-    move.right = false;
-  }
+  if (e.code === 'KeyW') move.forward = false;
+  if (e.code === 'KeyS') move.back = false;
+  if (e.code === 'KeyA') move.left = false;
+  if (e.code === 'KeyD') move.right = false;
 });
 
 const clock = new THREE.Clock();
 
 function animate() {
   requestAnimationFrame(animate);
-
   const delta = clock.getDelta();
   const speed = MOVE_SPEED * delta;
 
   if (walkControls.isLocked) {
     const forward = new THREE.Vector3();
-
     camera.getWorldDirection(forward);
-
     forward.y = 0;
     forward.normalize();
-
     const right = new THREE.Vector3();
+    right.crossVectors(forward, camera.up).normalize();
 
-    right
-      .crossVectors(forward, camera.up)
-      .normalize();
+    let dx = 0, dz = 0;
+    if (move.forward) { dx += forward.x * speed; dz += forward.z * speed; }
+    if (move.back)    { dx -= forward.x * speed; dz -= forward.z * speed; }
+    if (move.right)   { dx += right.x * speed;   dz += right.z * speed; }
+    if (move.left)    { dx -= right.x * speed;   dz -= right.z * speed; }
 
-    let dx = 0;
-    let dz = 0;
-
-    if (move.forward) {
-      dx += forward.x * speed;
-      dz += forward.z * speed;
-    }
-
-    if (move.back) {
-      dx -= forward.x * speed;
-      dz -= forward.z * speed;
-    }
-
-    if (move.right) {
-      dx += right.x * speed;
-      dz += right.z * speed;
-    }
-
-    if (move.left) {
-      dx -= right.x * speed;
-      dz -= right.z * speed;
-    }
-
-    const blockedX = isBlocked(
-      camera.position,
-      Math.sign(dx),
-      0,
-      dx
-    );
-
-    const blockedZ = isBlocked(
-      camera.position,
-      0,
-      Math.sign(dz),
-      dz
-    );
-
-    if (!blockedX) {
-      camera.position.x += dx;
-    }
-
-    if (!blockedZ) {
-      camera.position.z += dz;
-    }
+    const blockedX = isBlocked(camera.position, Math.sign(dx), 0, dx);
+    const blockedZ = isBlocked(camera.position, 0, Math.sign(dz), dz);
+    if (!blockedX) camera.position.x += dx;
+    if (!blockedZ) camera.position.z += dz;
   }
 
-  if (orbitControls.enabled) {
-    orbitControls.update();
-  }
+  if (orbitControls.enabled) orbitControls.update();
 
-  renderer.render(
-    scene,
-    camera
-  );
+  renderer.render(scene, camera);
 }
-
 animate();
 
 window.addEventListener('resize', () => {
-  camera.aspect =
-    window.innerWidth / window.innerHeight;
-
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-
-  renderer.setSize(
-    window.innerWidth,
-    window.innerHeight
-  );
+  renderer.setSize(window.innerWidth, window.innerHeight);
 });
-

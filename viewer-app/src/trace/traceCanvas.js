@@ -1,17 +1,19 @@
-// Handles loading an image file and drawing it onto the canvas.
-// Plain 2D Canvas drawing — separate system from Three.js's 3D scene.
-
 let canvas = null;
 let ctx = null;
 let loadedImage = null;
 
-// --------------------------------------------------
-// Trace state
-// --------------------------------------------------
-
 let calibrationPoints = [];
 let pixelsPerMeter = null;
 let corners = [];
+
+let completedRooms = []; 
+// {
+//   walls: [...],
+//   room: {...},
+//   rawCorners: [...]
+// }
+
+let tracingActive = false;
 
 
 // --------------------------------------------------
@@ -31,6 +33,23 @@ export function initCanvas() {
 
 
 // --------------------------------------------------
+// Tracing state
+// --------------------------------------------------
+
+export function startTracing() {
+  tracingActive = true;
+}
+
+export function isTracingActive() {
+  return tracingActive;
+}
+
+export function stopTracing() {
+  tracingActive = false;
+}
+
+
+// --------------------------------------------------
 // Image loading
 // --------------------------------------------------
 
@@ -46,7 +65,6 @@ export function loadImageFile(file, onLoaded) {
       canvas.width = img.width;
       canvas.height = img.height;
 
-      // Draw clean image
       ctx.clearRect(
         0,
         0,
@@ -60,10 +78,12 @@ export function loadImageFile(file, onLoaded) {
         0
       );
 
-      // New image = completely new trace
+      // New image = completely new tracing session
       calibrationPoints = [];
       pixelsPerMeter = null;
       corners = [];
+      completedRooms = [];
+      tracingActive = false;
 
       if (onLoaded) {
         onLoaded();
@@ -78,7 +98,7 @@ export function loadImageFile(file, onLoaded) {
   };
 
   reader.onerror = () => {
-    console.error('Failed to read image file.');
+    console.error('Failed to read file.');
   };
 
   reader.readAsDataURL(file);
@@ -86,20 +106,25 @@ export function loadImageFile(file, onLoaded) {
 
 
 // --------------------------------------------------
-// Getters
+// Get canvas
 // --------------------------------------------------
 
 export function getCanvas() {
   return canvas;
 }
 
-export function getContext() {
-  return ctx;
+
+// --------------------------------------------------
+// Check calibration
+// --------------------------------------------------
+
+export function isCalibrated() {
+  return pixelsPerMeter !== null;
 }
 
 
 // --------------------------------------------------
-// Redraw clean image
+// Redraw original image only
 // --------------------------------------------------
 
 export function redrawImage() {
@@ -123,6 +148,29 @@ export function redrawImage() {
 
 
 // --------------------------------------------------
+// Redraw current room only
+// --------------------------------------------------
+
+function redrawAllRooms() {
+
+  // IMPORTANT:
+  // Do NOT draw completed rooms here.
+  // Visually we only show the room currently being traced.
+
+  redrawImage();
+
+  // Draw current room corners only
+  for (const c of corners) {
+    drawMarker(
+      c.pixelX,
+      c.pixelY,
+      '#ff4444'
+    );
+  }
+}
+
+
+// --------------------------------------------------
 // Canvas click handling
 // --------------------------------------------------
 
@@ -130,8 +178,20 @@ export function onCanvasClick(
   pixelX,
   pixelY,
   onCalibrationNeeded,
-  onCornerAdded
+  onCornerAdded,
+  onSuspiciousOrder
 ) {
+
+  // ----------------------------------------------
+  // IMPORTANT:
+  // Ignore ALL canvas clicks until the user
+  // explicitly presses "Add Room".
+  // ----------------------------------------------
+
+  if (!tracingActive) {
+    return;
+  }
+
 
   // ----------------------------------------------
   // Calibration phase
@@ -150,12 +210,13 @@ export function onCanvasClick(
       '#00ff00'
     );
 
-    if (calibrationPoints.length === 2) {
-      if (onCalibrationNeeded) {
-        onCalibrationNeeded(
-          calibrationPoints
-        );
-      }
+    if (
+      calibrationPoints.length === 2 &&
+      onCalibrationNeeded
+    ) {
+      onCalibrationNeeded(
+        calibrationPoints
+      );
     }
 
     return;
@@ -163,7 +224,7 @@ export function onCanvasClick(
 
 
   // ----------------------------------------------
-  // Waiting for calibration distance
+  // Waiting for calibration
   // ----------------------------------------------
 
   if (pixelsPerMeter === null) {
@@ -186,6 +247,83 @@ export function onCanvasClick(
     (pixelY - origin.y) /
     pixelsPerMeter;
 
+
+  // ----------------------------------------------
+  // Check direction / angle constraint
+  // ----------------------------------------------
+  //
+  // The next corner should normally connect to
+  // the previous corner through a horizontal or
+  // vertical wall.
+  //
+  // A clearly diagonal connection may indicate
+  // that the user clicked the corners out of order.
+  //
+  // This is only a warning. The user can still
+  // choose to continue.
+
+  if (corners.length >= 1) {
+
+    const prev =
+      corners[corners.length - 1];
+
+    const dx =
+      meterX - prev.meterX;
+
+    const dz =
+      meterZ - prev.meterZ;
+
+
+    // Ignore a click directly on the previous
+    // corner to avoid an unnecessary warning.
+    if (dx !== 0 || dz !== 0) {
+
+      // Angle relative to horizontal/vertical axis
+      const angleDeg =
+        Math.abs(
+          Math.atan2(
+            dz,
+            dx
+          ) *
+          (180 / Math.PI)
+        ) % 90;
+
+
+      // angleDeg close to 0:
+      // horizontal / vertical
+      //
+      // angleDeg close to 45:
+      // diagonal
+
+      const DIAGONAL_TOLERANCE = 20;
+
+
+      if (
+        angleDeg > DIAGONAL_TOLERANCE &&
+        angleDeg < (90 - DIAGONAL_TOLERANCE) &&
+        onSuspiciousOrder
+      ) {
+
+        const proceed =
+          onSuspiciousOrder(
+            angleDeg
+          );
+
+
+        // User chose Cancel.
+        // Do not add this corner.
+        if (!proceed) {
+          return;
+        }
+      }
+    }
+  }
+
+
+  // ----------------------------------------------
+  // Add corner
+  // ----------------------------------------------
+
   corners.push({
     pixelX,
     pixelY,
@@ -193,11 +331,13 @@ export function onCanvasClick(
     meterZ,
   });
 
+
   drawMarker(
     pixelX,
     pixelY,
     '#ff4444'
   );
+
 
   if (onCornerAdded) {
     onCornerAdded(corners);
@@ -210,11 +350,15 @@ export function onCanvasClick(
 // --------------------------------------------------
 
 export function setCalibrationDistance(realMeters) {
+
   if (calibrationPoints.length !== 2) {
     return false;
   }
 
-  if (!Number.isFinite(realMeters) || realMeters <= 0) {
+  if (
+    !Number.isFinite(realMeters) ||
+    realMeters <= 0
+  ) {
     return false;
   }
 
@@ -247,6 +391,7 @@ function drawMarker(
   y,
   color
 ) {
+
   if (!ctx) {
     return;
   }
@@ -269,14 +414,74 @@ function drawMarker(
   ctx.strokeStyle =
     '#000';
 
-  ctx.lineWidth = 1;
+  ctx.lineWidth =
+    1;
 
   ctx.stroke();
 }
 
 
 // --------------------------------------------------
-// Get corners
+// Draw room overlay
+// --------------------------------------------------
+
+function drawRoomOverlay(
+  cornerList,
+  color
+) {
+
+  // Draw corners
+  for (const c of cornerList) {
+
+    drawMarker(
+      c.pixelX,
+      c.pixelY,
+      color
+    );
+  }
+
+
+  // Draw walls
+  for (
+    let i = 0;
+    i < cornerList.length;
+    i++
+  ) {
+
+    const a =
+      cornerList[i];
+
+    const b =
+      cornerList[
+        (i + 1) % cornerList.length
+      ];
+
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+      a.pixelX,
+      a.pixelY
+    );
+
+    ctx.lineTo(
+      b.pixelX,
+      b.pixelY
+    );
+
+    ctx.strokeStyle =
+      color;
+
+    ctx.lineWidth =
+      2;
+
+    ctx.stroke();
+  }
+}
+
+
+// --------------------------------------------------
+// Get current corners
 // --------------------------------------------------
 
 export function getCorners() {
@@ -285,11 +490,24 @@ export function getCorners() {
 
 
 // --------------------------------------------------
-// Calculate wall lengths
+// Get completed room count
 // --------------------------------------------------
 
-export function getComputedWallLengths() {
-  const lengths = [];
+export function getCompletedRoomCount() {
+  return completedRooms.length;
+}
+
+
+// --------------------------------------------------
+// Generate room data
+// --------------------------------------------------
+
+function generateRoomDataInternal(
+  roomId,
+  roomLabel
+) {
+
+  const wallEntries = [];
 
   for (
     let i = 0;
@@ -305,20 +523,78 @@ export function getComputedWallLengths() {
         (i + 1) % corners.length
       ];
 
-    const dist =
-      Math.hypot(
-        b.meterX - a.meterX,
-        b.meterZ - a.meterZ
-      );
 
-    lengths.push({
-      from: i,
-      to: (i + 1) % corners.length,
-      meters: dist.toFixed(2),
+    wallEntries.push({
+
+      id:
+        `wall_${roomId}_${i}`,
+
+      start: {
+
+        x:
+          parseFloat(
+            a.meterX.toFixed(3)
+          ),
+
+        z:
+          parseFloat(
+            a.meterZ.toFixed(3)
+          ),
+      },
+
+      end: {
+
+        x:
+          parseFloat(
+            b.meterX.toFixed(3)
+          ),
+
+        z:
+          parseFloat(
+            b.meterZ.toFixed(3)
+          ),
+      },
     });
   }
 
-  return lengths;
+
+  const roomEntry = {
+
+    id:
+      roomId,
+
+    label:
+      roomLabel,
+
+    wallIds:
+      wallEntries.map(
+        (w) => w.id
+      ),
+
+    corners:
+      corners.map(
+        (c) => ({
+          x:
+            parseFloat(
+              c.meterX.toFixed(3)
+            ),
+
+          z:
+            parseFloat(
+              c.meterZ.toFixed(3)
+            ),
+        })
+      ),
+  };
+
+
+  return {
+    walls:
+      wallEntries,
+
+    room:
+      roomEntry,
+  };
 }
 
 
@@ -328,28 +604,11 @@ export function getComputedWallLengths() {
 
 export function drawWallLengthOverlay() {
 
-  // Start from a completely clean image.
-  redrawImage();
+  // Start from clean image
+  redrawAllRooms();
 
 
-  // ----------------------------------------------
-  // Redraw corner markers
-  // ----------------------------------------------
-
-  for (const c of corners) {
-
-    drawMarker(
-      c.pixelX,
-      c.pixelY,
-      '#ff4444'
-    );
-  }
-
-
-  // ----------------------------------------------
-  // Draw walls
-  // ----------------------------------------------
-
+  // Draw current room walls
   for (
     let i = 0;
     i < corners.length;
@@ -384,7 +643,8 @@ export function drawWallLengthOverlay() {
     ctx.strokeStyle =
       '#00aaff';
 
-    ctx.lineWidth = 3;
+    ctx.lineWidth =
+      3;
 
     ctx.stroke();
 
@@ -427,7 +687,8 @@ export function drawWallLengthOverlay() {
     ctx.strokeStyle =
       '#000';
 
-    ctx.lineWidth = 3;
+    ctx.lineWidth =
+      3;
 
     ctx.strokeText(
       label,
@@ -445,30 +706,151 @@ export function drawWallLengthOverlay() {
 
 
 // --------------------------------------------------
-// FULL RESET / START OVER
+// Commit current room
+// --------------------------------------------------
+
+export function commitCurrentRoom(
+  roomId,
+  roomLabel
+) {
+
+  if (corners.length < 3) {
+
+    return {
+      success: false,
+      reason: 'not_enough_corners',
+    };
+  }
+
+
+  // ----------------------------------------------
+  // Prevent duplicate room IDs
+  // ----------------------------------------------
+
+  const idTaken =
+    completedRooms.some(
+      (room) =>
+        room.room.id === roomId
+    );
+
+  if (idTaken) {
+
+    return {
+      success: false,
+      reason: 'duplicate_id',
+    };
+  }
+
+
+  // ----------------------------------------------
+  // Generate room data
+  // ----------------------------------------------
+
+  const data =
+    generateRoomDataInternal(
+      roomId,
+      roomLabel
+    );
+
+
+  // ----------------------------------------------
+  // Save completed room
+  // ----------------------------------------------
+
+  completedRooms.push({
+
+    ...data,
+
+    rawCorners: [
+      ...corners
+    ],
+  });
+
+
+  // ----------------------------------------------
+  // Clear current room
+  // ----------------------------------------------
+
+  corners = [];
+
+
+  // ----------------------------------------------
+  // Clean visual state
+  // ----------------------------------------------
+
+  redrawAllRooms();
+
+
+  return {
+    success: true,
+  };
+}
+
+
+// --------------------------------------------------
+// Reset current room corners
+// --------------------------------------------------
+
+export function resetCurrentRoomCorners() {
+
+  corners = [];
+
+  redrawImage();
+}
+
+
+// --------------------------------------------------
+// Save all rooms for 3D preview
+// --------------------------------------------------
+
+export function saveAllRoomsForPreview() {
+
+  const allWalls =
+    completedRooms.flatMap(
+      (room) => room.walls
+    );
+
+  const allRooms =
+    completedRooms.map(
+      (room) => room.room
+    );
+
+
+  const floorPlanShape = {
+
+    walls:
+      allWalls,
+
+    rooms:
+      allRooms,
+  };
+
+
+  localStorage.setItem(
+    'unittwin_trace_preview',
+    JSON.stringify(
+      floorPlanShape
+    )
+  );
+}
+
+
+// --------------------------------------------------
+// Full recalibration / complete reset
 // --------------------------------------------------
 
 export function startRecalibration() {
 
-  // Clear calibration points
   calibrationPoints = [];
 
-  // Remove the current scale
   pixelsPerMeter = null;
 
-  // IMPORTANT:
-  // Delete ALL existing corners.
-  // This means the previous room/trace is completely
-  // discarded and we start V1 again from zero.
   corners = [];
 
-  // Remove all visual overlays:
-  // - green calibration points
-  // - red corner points
-  // - blue wall lines
-  // - wall-length labels
-  //
-  // Only the original image remains.
+  completedRooms = [];
+
+  tracingActive = false;
+
   redrawImage();
 }
 
@@ -478,5 +860,6 @@ export function startRecalibration() {
 // --------------------------------------------------
 
 export function resetTrace() {
+
   startRecalibration();
 }
