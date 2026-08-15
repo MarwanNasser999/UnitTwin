@@ -53,7 +53,12 @@ viewer-app/
             verification/recalibration), corner tracing with order/angle
             validation, multi-room support, duplicate-ID prevention,
             direct "Preview in 3D" connection via localStorage
-      - [ ] V2 — Doors/openings placement in the trace tool
+      - [x] V2 — Doors/openings placement in the trace tool: click a wall
+            to select it, click two points along it to mark a door
+            (projected precisely onto the wall's line), converted to
+            offset/width and attached to the correct wall's `openings`
+            in the generated data. Integrated into the per-room flow
+            (corners → doors → verify → confirm), not a separate pass.
       - [ ] V3 — Multiple rooms with properly shared walls (avoid duplicate
             wall generation, connect adjacent rooms correctly)
       - [ ] V4 — Automated CAD/DXF/vector-PDF parsing; VLM-based parsing for
@@ -107,6 +112,23 @@ viewer-app/
       from the ad-hoc bug-fixing that's happened organically throughout
       development so far. Worth revisiting after each major phase, not
       just once at the very end.
+
+## Design Decisions Worth Knowing
+
+- **Presentation scale (1.1x) + FOV=90.** First-person 3D on a flat monitor
+  lacks real peripheral vision and depth cues, so mathematically accurate
+  rooms can feel smaller/more cramped than they really are — a known,
+  documented effect, not unique to this project. After verifying (multiple
+  ways: measured mesh bounding boxes, a 1-meter reference cube, top-down
+  view) that traced room dimensions are 100% accurate, we tuned FOV to 90°
+  (wider FOV compensates for missing peripheral vision) and apply a small
+  1.1x visual-only scale factor to rendered geometry (walls, rooms,
+  furniture) for comfort. **The underlying stored data (what would be
+  reported to a buyer as the real room size) is never altered** — only
+  what's rendered. This is a deliberate, documented product decision, not
+  a bug workaround — if revisited, change `PRESENTATION_SCALE` in
+  `main.js` and `furniture.js` (currently duplicated — should move to a
+  shared constant if touched again) and the camera FOV in `main.js`.
 
 ## Known Limitations (tracked, not forgotten)
 
