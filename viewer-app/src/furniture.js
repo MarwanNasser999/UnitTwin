@@ -2,75 +2,236 @@ import * as THREE from 'three';
 import { furnitureCatalog } from './furnitureData.js';
 import { loadFurnitureModel } from './models.js';
 
-function createPlaceholderMesh(catalogItem, instance) {
-  const { width, height, depth } = catalogItem.dimensions;
+const PRESENTATION_SCALE = 1.1;
 
-  const geometry = new THREE.BoxGeometry(width, height, depth);
-  const material = new THREE.MeshStandardMaterial({ color: catalogItem.color });
-  const mesh = new THREE.Mesh(geometry, material);
 
-  mesh.position.set(instance.position.x, height / 2, instance.position.z);
-  mesh.rotation.y = instance.rotationY;
-  mesh.name = instance.instanceId;
+function createPlaceholderMesh(
+  catalogItem,
+  instance
+) {
+  const {
+    width,
+    height,
+    depth,
+  } = catalogItem.dimensions;
+
+  const scaledWidth =
+    width * PRESENTATION_SCALE;
+
+  const scaledHeight =
+    height * PRESENTATION_SCALE;
+
+  const scaledDepth =
+    depth * PRESENTATION_SCALE;
+
+
+  const geometry =
+    new THREE.BoxGeometry(
+      scaledWidth,
+      scaledHeight,
+      scaledDepth
+    );
+
+
+  const material =
+    new THREE.MeshStandardMaterial({
+      color: catalogItem.color,
+    });
+
+
+  const mesh =
+    new THREE.Mesh(
+      geometry,
+      material
+    );
+
+
+  mesh.position.set(
+    instance.position.x,
+    scaledHeight / 2,
+    instance.position.z
+  );
+
+
+  mesh.rotation.y =
+    instance.rotationY;
+
+
+  mesh.name =
+    instance.instanceId;
+
 
   return mesh;
 }
 
+
 /**
- * Builds the furniture layer. Placeholder boxes appear immediately;
- * if a catalog item has a modelFolder, its real model loads in the
- * background and replaces the placeholder once ready.
+ * Builds the furniture layer.
+ *
+ * Furniture dimensions are presentation-scaled by
+ * PRESENTATION_SCALE while the original catalog data
+ * remains unchanged.
+ *
+ * Placeholder boxes appear immediately.
+ * If a catalog item has a modelFolder, its real model
+ * loads in the background and replaces the placeholder
+ * once ready.
  */
-export function buildFurnitureLayer(placedFurniture) {
-  const group = new THREE.Group();
-  group.name = 'furniture';
+export function buildFurnitureLayer(
+  placedFurniture
+) {
+  const group =
+    new THREE.Group();
 
-  for (const instance of placedFurniture) {
-    const catalogItem = furnitureCatalog.find((c) => c.id === instance.catalogId);
-    if (!catalogItem) continue;
+  group.name =
+    'furniture';
 
-    const placeholder = createPlaceholderMesh(catalogItem, instance);
-    group.add(placeholder);
 
-    if (catalogItem.modelFolder) {
+  for (
+    const instance of placedFurniture
+  ) {
+    const catalogItem =
+      furnitureCatalog.find(
+        (c) =>
+          c.id ===
+          instance.catalogId
+      );
+
+
+    if (!catalogItem) {
+      continue;
+    }
+
+
+    const placeholder =
+      createPlaceholderMesh(
+        catalogItem,
+        instance
+      );
+
+
+    group.add(
+      placeholder
+    );
+
+
+    if (
+      catalogItem.modelFolder
+    ) {
+      /*
+       * Scale the dimensions passed to the
+       * model loader as well, so the real GLTF/GLB
+       * model matches the presentation-scaled
+       * placeholder dimensions.
+       */
+      const scaledDimensions = {
+        width:
+          catalogItem.dimensions.width *
+          PRESENTATION_SCALE,
+
+        height:
+          catalogItem.dimensions.height *
+          PRESENTATION_SCALE,
+
+        depth:
+          catalogItem.dimensions.depth *
+          PRESENTATION_SCALE,
+      };
+
+
       loadFurnitureModel(
         catalogItem.modelFolder,
-        catalogItem.dimensions,
+        scaledDimensions,
+
         (model) => {
-          if (!placeholder.parent) return;
+          if (!placeholder.parent) {
+            return;
+          }
 
-          // `model` here is now the WRAPPER group from models.js —
-          // we position/rotate/name the wrapper; the actual mesh
-          // inside keeps its own internal centering offset intact.
-          model.position.x = placeholder.position.x;
-          model.position.z = placeholder.position.z;
-          model.rotation.y = instance.rotationY;
-          model.name = instance.instanceId;
 
-          model.traverse((child) => {
-            child.name = instance.instanceId;
-          });
+          /*
+           * `model` here is the WRAPPER group
+           * from models.js.
+           *
+           * We position/rotate/name the wrapper;
+           * the actual mesh inside keeps its own
+           * internal centering offset intact.
+           */
+          model.position.x =
+            placeholder.position.x;
 
-          group.add(model);
-          group.remove(placeholder);
+          model.position.y =
+            placeholder.position.y;
+
+          model.position.z =
+            placeholder.position.z;
+
+
+          model.rotation.y =
+            instance.rotationY;
+
+
+          model.name =
+            instance.instanceId;
+
+
+          model.traverse(
+            (child) => {
+              child.name =
+                instance.instanceId;
+            }
+          );
+
+
+          group.add(
+            model
+          );
+
+
+          group.remove(
+            placeholder
+          );
         },
+
         () => {
-          // Load failed — placeholder box just stays as-is, already
-          // a reasonable fallback, no further action needed.
+          /*
+           * Load failed — placeholder box stays
+           * as the fallback.
+           */
         }
       );
     }
   }
 
+
   return group;
 }
 
-export function getFurnitureOBB(instance, catalogItem) {
+
+export function getFurnitureOBB(
+  instance,
+  catalogItem
+) {
   return {
-    x: instance.position.x,
-    z: instance.position.z,
-    halfWidth: catalogItem.dimensions.width / 2,
-    halfDepth: catalogItem.dimensions.depth / 2,
-    rotation: instance.rotationY,
+    x:
+      instance.position.x,
+
+    z:
+      instance.position.z,
+
+    halfWidth:
+      (
+        catalogItem.dimensions.width *
+        PRESENTATION_SCALE
+      ) / 2,
+
+    halfDepth:
+      (
+        catalogItem.dimensions.depth *
+        PRESENTATION_SCALE
+      ) / 2,
+
+    rotation:
+      instance.rotationY,
   };
 }

@@ -6,12 +6,26 @@ let calibrationPoints = [];
 let pixelsPerMeter = null;
 let corners = [];
 
-let completedRooms = []; 
+// --------------------------------------------------
+// Door state
+// --------------------------------------------------
+
+let doorMode = false;
+let selectedWallIndex = null;
+let doorClickPoints = [];
+let roomDoors = [];
+
+// --------------------------------------------------
+// Completed rooms
+// --------------------------------------------------
+
 // {
 //   walls: [...],
 //   room: {...},
 //   rawCorners: [...]
 // }
+
+let completedRooms = [];
 
 let tracingActive = false;
 
@@ -50,6 +64,39 @@ export function stopTracing() {
 
 
 // --------------------------------------------------
+// Door mode state
+// --------------------------------------------------
+
+export function enterDoorMode() {
+  doorMode = true;
+  selectedWallIndex = null;
+  doorClickPoints = [];
+}
+
+export function exitDoorMode() {
+  doorMode = false;
+  selectedWallIndex = null;
+  doorClickPoints = [];
+}
+
+export function isDoorMode() {
+  return doorMode;
+}
+
+
+// --------------------------------------------------
+// Clear current room doors
+// --------------------------------------------------
+
+export function clearRoomDoors() {
+  roomDoors = [];
+
+  selectedWallIndex = null;
+  doorClickPoints = [];
+}
+
+
+// --------------------------------------------------
 // Image loading
 // --------------------------------------------------
 
@@ -82,8 +129,15 @@ export function loadImageFile(file, onLoaded) {
       calibrationPoints = [];
       pixelsPerMeter = null;
       corners = [];
+      roomDoors = [];
       completedRooms = [];
+
       tracingActive = false;
+
+      // Reset door state
+      doorMode = false;
+      selectedWallIndex = null;
+      doorClickPoints = [];
 
       if (onLoaded) {
         onLoaded();
@@ -171,6 +225,225 @@ function redrawAllRooms() {
 
 
 // --------------------------------------------------
+// Find closest wall and project click onto wall
+// --------------------------------------------------
+
+function findClosestWallAndProjection(
+  pixelX,
+  pixelY
+) {
+  let closestWallIndex = -1;
+  let closestDist = Infinity;
+  let closestProjection = null;
+
+  for (
+    let i = 0;
+    i < corners.length;
+    i++
+  ) {
+    const a = corners[i];
+
+    const b =
+      corners[
+        (i + 1) % corners.length
+      ];
+
+    const dx =
+      b.pixelX - a.pixelX;
+
+    const dy =
+      b.pixelY - a.pixelY;
+
+    const lengthSq =
+      dx * dx +
+      dy * dy;
+
+    // Avoid division by zero
+    if (lengthSq === 0) {
+      continue;
+    }
+
+    // How far along the wall the closest
+    // projected point is.
+    let t =
+      (
+        (pixelX - a.pixelX) * dx +
+        (pixelY - a.pixelY) * dy
+      ) / lengthSq;
+
+    // Clamp projection to the actual wall segment
+    t = Math.max(
+      0,
+      Math.min(1, t)
+    );
+
+    const projX =
+      a.pixelX + t * dx;
+
+    const projY =
+      a.pixelY + t * dy;
+
+    const dist =
+      Math.hypot(
+        pixelX - projX,
+        pixelY - projY
+      );
+
+    if (dist < closestDist) {
+      closestDist = dist;
+      closestWallIndex = i;
+
+      closestProjection = {
+        pixelX: projX,
+        pixelY: projY,
+        t,
+      };
+    }
+  }
+
+  return {
+    wallIndex: closestWallIndex,
+    projection: closestProjection,
+    distance: closestDist,
+  };
+}
+
+
+// --------------------------------------------------
+// Door mode click handling
+// --------------------------------------------------
+
+export function onDoorModeClick(
+  pixelX,
+  pixelY,
+  onDoorPlaced
+) {
+  const {
+    wallIndex,
+    projection,
+    distance,
+  } = findClosestWallAndProjection(
+    pixelX,
+    pixelY
+  );
+
+  // How close the user needs to click
+  // to a wall.
+  const CLICK_TOLERANCE_PX = 25;
+
+  // Click too far away from every wall
+  if (
+    wallIndex === -1 ||
+    !projection ||
+    distance > CLICK_TOLERANCE_PX
+  ) {
+    return;
+  }
+
+  // First click selects the wall
+  if (selectedWallIndex === null) {
+    selectedWallIndex = wallIndex;
+    doorClickPoints = [];
+  }
+
+  // Do not allow changing walls
+  // while placing the same door.
+  else if (
+    wallIndex !== selectedWallIndex
+  ) {
+    return;
+  }
+
+  // Store projected point
+  doorClickPoints.push(projection);
+
+  // Draw yellow door marker
+  drawMarker(
+    projection.pixelX,
+    projection.pixelY,
+    '#ffdd00'
+  );
+
+  // Two points = complete door opening
+  if (doorClickPoints.length === 2) {
+
+    const a =
+      corners[selectedWallIndex];
+
+    const b =
+      corners[
+        (selectedWallIndex + 1) %
+        corners.length
+      ];
+
+    // Actual wall length in meters
+    const wallLengthMeters =
+      Math.hypot(
+        b.meterX - a.meterX,
+        b.meterZ - a.meterZ
+      );
+
+    const t1 =
+      doorClickPoints[0].t;
+
+    const t2 =
+      doorClickPoints[1].t;
+
+    // Door can be clicked in either direction.
+    // Always store the smaller t as the offset.
+    const offsetT =
+      Math.min(
+        t1,
+        t2
+      );
+
+    const widthT =
+      Math.abs(
+        t2 - t1
+      );
+
+    const door = {
+      wallIndex: selectedWallIndex,
+
+      offset: parseFloat(
+        (
+          offsetT *
+          wallLengthMeters
+        ).toFixed(3)
+      ),
+
+      width: parseFloat(
+        (
+          widthT *
+          wallLengthMeters
+        ).toFixed(3)
+      ),
+    };
+
+    roomDoors.push(door);
+
+    // Reset selection so another door
+    // can be placed on any wall.
+    selectedWallIndex = null;
+    doorClickPoints = [];
+
+    if (onDoorPlaced) {
+      onDoorPlaced(roomDoors);
+    }
+  }
+}
+
+
+// --------------------------------------------------
+// Get current room doors
+// --------------------------------------------------
+
+export function getRoomDoors() {
+  return roomDoors;
+}
+
+
+// --------------------------------------------------
 // Canvas click handling
 // --------------------------------------------------
 
@@ -189,6 +462,21 @@ export function onCanvasClick(
   // ----------------------------------------------
 
   if (!tracingActive) {
+    return;
+  }
+
+
+  // ----------------------------------------------
+  // Door mode
+  // ----------------------------------------------
+
+  if (doorMode) {
+    onDoorModeClick(
+      pixelX,
+      pixelY,
+      null
+    );
+
     return;
   }
 
@@ -251,21 +539,13 @@ export function onCanvasClick(
   // ----------------------------------------------
   // Check direction / angle constraint
   // ----------------------------------------------
-  //
-  // The next corner should normally connect to
-  // the previous corner through a horizontal or
-  // vertical wall.
-  //
-  // A clearly diagonal connection may indicate
-  // that the user clicked the corners out of order.
-  //
-  // This is only a warning. The user can still
-  // choose to continue.
 
   if (corners.length >= 1) {
 
     const prev =
-      corners[corners.length - 1];
+      corners[
+        corners.length - 1
+      ];
 
     const dx =
       meterX - prev.meterX;
@@ -273,10 +553,12 @@ export function onCanvasClick(
     const dz =
       meterZ - prev.meterZ;
 
-
     // Ignore a click directly on the previous
     // corner to avoid an unnecessary warning.
-    if (dx !== 0 || dz !== 0) {
+    if (
+      dx !== 0 ||
+      dz !== 0
+    ) {
 
       // Angle relative to horizontal/vertical axis
       const angleDeg =
@@ -288,19 +570,13 @@ export function onCanvasClick(
           (180 / Math.PI)
         ) % 90;
 
-
-      // angleDeg close to 0:
-      // horizontal / vertical
-      //
-      // angleDeg close to 45:
-      // diagonal
-
       const DIAGONAL_TOLERANCE = 20;
 
-
       if (
-        angleDeg > DIAGONAL_TOLERANCE &&
-        angleDeg < (90 - DIAGONAL_TOLERANCE) &&
+        angleDeg >
+          DIAGONAL_TOLERANCE &&
+        angleDeg <
+          (90 - DIAGONAL_TOLERANCE) &&
         onSuspiciousOrder
       ) {
 
@@ -308,7 +584,6 @@ export function onCanvasClick(
           onSuspiciousOrder(
             angleDeg
           );
-
 
         // User chose Cancel.
         // Do not add this corner.
@@ -331,13 +606,11 @@ export function onCanvasClick(
     meterZ,
   });
 
-
   drawMarker(
     pixelX,
     pixelY,
     '#ff4444'
   );
-
 
   if (onCornerAdded) {
     onCornerAdded(corners);
@@ -349,9 +622,13 @@ export function onCanvasClick(
 // Set calibration distance
 // --------------------------------------------------
 
-export function setCalibrationDistance(realMeters) {
+export function setCalibrationDistance(
+  realMeters
+) {
 
-  if (calibrationPoints.length !== 2) {
+  if (
+    calibrationPoints.length !== 2
+  ) {
     return false;
   }
 
@@ -377,6 +654,18 @@ export function setCalibrationDistance(realMeters) {
 
   pixelsPerMeter =
     pixelDist / realMeters;
+
+  // Debug information for scale diagnosis
+  console.log(
+    '[TRACE] Calibration completed:',
+    {
+      point1: a,
+      point2: b,
+      pixelDistance: pixelDist,
+      realDistanceMeters: realMeters,
+      pixelsPerMeter,
+    }
+  );
 
   return true;
 }
@@ -453,9 +742,9 @@ function drawRoomOverlay(
 
     const b =
       cornerList[
-        (i + 1) % cornerList.length
+        (i + 1) %
+        cornerList.length
       ];
-
 
     ctx.beginPath();
 
@@ -524,6 +813,24 @@ function generateRoomDataInternal(
       ];
 
 
+    // --------------------------------------------
+    // Find door openings belonging to this wall
+    // --------------------------------------------
+
+    const wallOpenings =
+      roomDoors
+        .filter(
+          (door) =>
+            door.wallIndex === i
+        )
+        .map(
+          (door) => ({
+            offset: door.offset,
+            width: door.width,
+          })
+        );
+
+
     wallEntries.push({
 
       id:
@@ -554,6 +861,15 @@ function generateRoomDataInternal(
             b.meterZ.toFixed(3)
           ),
       },
+
+      // Only add openings when
+      // this wall actually has doors.
+      ...(wallOpenings.length > 0
+        ? {
+            openings:
+              wallOpenings,
+          }
+        : {}),
     });
   }
 
@@ -568,7 +884,8 @@ function generateRoomDataInternal(
 
     wallIds:
       wallEntries.map(
-        (w) => w.id
+        (w) =>
+          w.id
       ),
 
     corners:
@@ -589,6 +906,7 @@ function generateRoomDataInternal(
 
 
   return {
+
     walls:
       wallEntries,
 
@@ -706,6 +1024,92 @@ export function drawWallLengthOverlay() {
 
 
 // --------------------------------------------------
+// Debug trace information
+// --------------------------------------------------
+
+function logCurrentRoomGeometry() {
+
+  console.group(
+    '[TRACE DEBUG] Current Room Geometry'
+  );
+
+  console.log(
+    'Calibration points:',
+    calibrationPoints
+  );
+
+  console.log(
+    'Pixels per meter:',
+    pixelsPerMeter
+  );
+
+  console.log(
+    'Number of corners:',
+    corners.length
+  );
+
+  console.log(
+    'Corners:',
+    JSON.parse(
+      JSON.stringify(corners)
+    )
+  );
+
+  if (corners.length >= 2) {
+
+    const wallLengths =
+      [];
+
+    for (
+      let i = 0;
+      i < corners.length;
+      i++
+    ) {
+
+      const a =
+        corners[i];
+
+      const b =
+        corners[
+          (i + 1) %
+          corners.length
+        ];
+
+      const length =
+        Math.hypot(
+          b.meterX - a.meterX,
+          b.meterZ - a.meterZ
+        );
+
+      wallLengths.push({
+        wallIndex: i,
+        from: i,
+        to:
+          (i + 1) %
+          corners.length,
+        lengthMeters:
+          length,
+      });
+    }
+
+    console.log(
+      'Wall lengths:',
+      wallLengths
+    );
+  }
+
+  console.log(
+    'Room doors:',
+    JSON.parse(
+      JSON.stringify(roomDoors)
+    )
+  );
+
+  console.groupEnd();
+}
+
+
+// --------------------------------------------------
 // Commit current room
 // --------------------------------------------------
 
@@ -718,9 +1122,18 @@ export function commitCurrentRoom(
 
     return {
       success: false,
-      reason: 'not_enough_corners',
+      reason:
+        'not_enough_corners',
     };
   }
+
+
+  // ----------------------------------------------
+  // DEBUG:
+  // Log the geometry BEFORE it is cleared.
+  // ----------------------------------------------
+
+  logCurrentRoomGeometry();
 
 
   // ----------------------------------------------
@@ -737,7 +1150,8 @@ export function commitCurrentRoom(
 
     return {
       success: false,
-      reason: 'duplicate_id',
+      reason:
+        'duplicate_id',
     };
   }
 
@@ -772,6 +1186,12 @@ export function commitCurrentRoom(
   // ----------------------------------------------
 
   corners = [];
+  roomDoors = [];
+
+  // Reset door state
+  doorMode = false;
+  selectedWallIndex = null;
+  doorClickPoints = [];
 
 
   // ----------------------------------------------
@@ -794,6 +1214,27 @@ export function commitCurrentRoom(
 export function resetCurrentRoomCorners() {
 
   corners = [];
+  roomDoors = [];
+
+  // Reset door state
+  doorMode = false;
+  selectedWallIndex = null;
+  doorClickPoints = [];
+
+  // IMPORTANT:
+  //
+  // If calibration has NOT been completed,
+  // clear any partial calibration clicks too.
+  //
+  // This prevents a leftover first calibration
+  // point from contaminating the next attempt.
+  //
+  // If calibration was already completed,
+  // preserve it so it can be reused for another room.
+
+  if (pixelsPerMeter === null) {
+    calibrationPoints = [];
+  }
 
   redrawImage();
 }
@@ -807,12 +1248,14 @@ export function saveAllRoomsForPreview() {
 
   const allWalls =
     completedRooms.flatMap(
-      (room) => room.walls
+      (room) =>
+        room.walls
     );
 
   const allRooms =
     completedRooms.map(
-      (room) => room.room
+      (room) =>
+        room.room
     );
 
 
@@ -847,9 +1290,16 @@ export function startRecalibration() {
 
   corners = [];
 
+  roomDoors = [];
+
   completedRooms = [];
 
   tracingActive = false;
+
+  // Reset door state
+  doorMode = false;
+  selectedWallIndex = null;
+  doorClickPoints = [];
 
   redrawImage();
 }
@@ -860,6 +1310,5 @@ export function startRecalibration() {
 // --------------------------------------------------
 
 export function resetTrace() {
-
   startRecalibration();
 }

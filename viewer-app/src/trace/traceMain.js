@@ -15,6 +15,12 @@ import {
   redrawImage,
   startTracing,
   stopTracing,
+
+  enterDoorMode,
+  exitDoorMode,
+  isDoorMode,
+  onDoorModeClick,
+  getRoomDoors,
 } from './traceCanvas.js';
 
 
@@ -64,6 +70,23 @@ const preview3dBtn =
     'preview-3d-btn'
   );
 
+const cancelRoomBtn =
+  document.getElementById(
+    'cancel-room-btn'
+  );
+
+
+// --------------------------------------------------
+// Stage state
+// --------------------------------------------------
+//
+// corners -> tracing room corners
+// doors   -> marking doors
+// verify  -> checking dimensions before saving
+//
+
+let stage = 'corners';
+
 
 // --------------------------------------------------
 // Numeric distance input
@@ -78,30 +101,19 @@ function askForDistance() {
         'Enter the real-world distance between those two points in meters (e.g. 3.5):'
       );
 
-
     // User cancelled
     if (input === null) {
       return null;
     }
 
-
     const value =
       input.trim();
 
-
-    // Only allow numbers like:
-    //
-    // 3
-    // 3.5
-    // 3.50
-    // 10
-    // 10.25
-
+    // Only allow positive decimal numbers
     const validNumber =
       /^\d+(?:\.\d+)?$/.test(
         value
       );
-
 
     if (!validNumber) {
 
@@ -114,10 +126,8 @@ function askForDistance() {
       continue;
     }
 
-
     const parsed =
       Number(value);
-
 
     if (
       !Number.isFinite(parsed) ||
@@ -131,9 +141,26 @@ function askForDistance() {
       continue;
     }
 
-
     return parsed;
   }
+}
+
+
+// --------------------------------------------------
+// Reset stage
+// --------------------------------------------------
+
+function resetStage() {
+
+  stage = 'corners';
+
+  exitDoorMode();
+
+  finishRoomBtn.textContent =
+    'Finish This Room';
+
+  cancelVerifyBtn.style.display =
+    'none';
 }
 
 
@@ -152,31 +179,29 @@ imageInput.addEventListener(
       return;
     }
 
-
     status.textContent =
       'Loading image...';
-
 
     loadImageFile(
       file,
       () => {
 
-        // ------------------------------------------
-        // Image loaded successfully.
-        //
-        // Tracing MUST remain inactive until the
-        // user explicitly presses "Add Room".
-        // ------------------------------------------
+        // New image starts completely fresh
 
-        status.textContent =
-          'Image loaded. Click "Add Room" to begin.';
+        stopTracing();
+
+        resetStage();
+
+        if (cancelRoomBtn) {
+          cancelRoomBtn.style.display =
+            'none';
+        }
 
         addRoomBtn.textContent =
           'Add Room';
 
-        stopTracing();
-
-        resetVerificationState();
+        status.textContent =
+          'Image loaded. Click "Add Room" to begin.';
       }
     );
   }
@@ -190,7 +215,6 @@ imageInput.addEventListener(
 const canvas =
   getCanvas();
 
-
 canvas.addEventListener(
   'click',
   (event) => {
@@ -198,16 +222,41 @@ canvas.addEventListener(
     const rect =
       canvas.getBoundingClientRect();
 
-
     const pixelX =
       event.clientX -
       rect.left;
-
 
     const pixelY =
       event.clientY -
       rect.top;
 
+
+    // ----------------------------------------------
+    // Door mode
+    // ----------------------------------------------
+
+    if (
+      stage === 'doors' &&
+      isDoorMode()
+    ) {
+
+      onDoorModeClick(
+        pixelX,
+        pixelY,
+        (doors) => {
+
+          status.textContent =
+            `${doors.length} door(s) marked. Click more walls, or "Done Adding Doors" when finished.`;
+        }
+      );
+
+      return;
+    }
+
+
+    // ----------------------------------------------
+    // Normal corner/calibration mode
+    // ----------------------------------------------
 
     onCanvasClick(
 
@@ -216,15 +265,14 @@ canvas.addEventListener(
       pixelY,
 
 
-      // ------------------------------------------
+      // --------------------------------------------
       // Calibration callback
-      // ------------------------------------------
+      // --------------------------------------------
 
       (calibrationPoints) => {
 
         const parsed =
           askForDistance();
-
 
         // User cancelled
         if (parsed === null) {
@@ -235,12 +283,10 @@ canvas.addEventListener(
           return;
         }
 
-
         const success =
           setCalibrationDistance(
             parsed
           );
-
 
         if (!success) {
 
@@ -250,15 +296,14 @@ canvas.addEventListener(
           return;
         }
 
-
         status.textContent =
           'Calibrated. Click room corners in order.';
       },
 
 
-      // ------------------------------------------
+      // --------------------------------------------
       // Corner callback
-      // ------------------------------------------
+      // --------------------------------------------
 
       (corners) => {
 
@@ -267,9 +312,9 @@ canvas.addEventListener(
       },
 
 
-      // ------------------------------------------
+      // --------------------------------------------
       // Suspicious corner order callback
-      // ------------------------------------------
+      // --------------------------------------------
 
       (angleDeg) => {
 
@@ -286,28 +331,6 @@ canvas.addEventListener(
 
 
 // --------------------------------------------------
-// Room verification state
-// --------------------------------------------------
-
-let pendingVerification = false;
-
-
-function resetVerificationState() {
-
-  pendingVerification =
-    false;
-
-
-  finishRoomBtn.textContent =
-    'Finish This Room';
-
-
-  cancelVerifyBtn.style.display =
-    'none';
-}
-
-
-// --------------------------------------------------
 // Add Room / Add Another Room
 // --------------------------------------------------
 
@@ -316,33 +339,32 @@ addRoomBtn.addEventListener(
   () => {
 
     // --------------------------------------------
-    // Every click means:
-    //
-    // "Start a completely fresh room."
-    //
-    // Previous rooms remain safely stored in
-    // completedRooms.
+    // Start a completely fresh current room
     // --------------------------------------------
 
     resetCurrentRoomCorners();
 
     redrawImage();
 
-    resetVerificationState();
-
+    resetStage();
 
     // --------------------------------------------
-    // IMPORTANT:
-    //
-    // This is the gate that activates canvas
-    // interaction.
+    // Activate tracing
     // --------------------------------------------
 
     startTracing();
 
+    // --------------------------------------------
+    // Show Cancel Room
+    // --------------------------------------------
+
+    if (cancelRoomBtn) {
+      cancelRoomBtn.style.display =
+        'inline-block';
+    }
 
     // --------------------------------------------
-    // Calibration is shared across all rooms
+    // Calibration is shared across rooms
     // --------------------------------------------
 
     if (isCalibrated()) {
@@ -356,9 +378,8 @@ addRoomBtn.addEventListener(
         'Click two points a known distance apart to calibrate (e.g. both ends of a labeled wall).';
     }
 
-
     // --------------------------------------------
-    // Keep button text consistent
+    // Button text
     // --------------------------------------------
 
     addRoomBtn.textContent =
@@ -382,156 +403,161 @@ finishRoomBtn.addEventListener(
 
 
     // --------------------------------------------
-    // Need at least 3 corners
+    // Stage: corners
     // --------------------------------------------
 
-    if (corners.length < 3) {
+    if (stage === 'corners') {
 
-      alert(
-        'You need at least 3 corners before finishing this room.'
-      );
+      if (corners.length < 3) {
+
+        alert(
+          'You need at least 3 corners before adding doors.'
+        );
+
+        return;
+      }
+
+      // Move to door stage
+
+      stage = 'doors';
+
+      enterDoorMode();
+
+      finishRoomBtn.textContent =
+        'Done Adding Doors';
+
+      status.textContent =
+        'Click a wall, then click two points along it to mark a door. Repeat for more doors, or click "Done Adding Doors" if this room has none.';
 
       return;
     }
 
 
     // --------------------------------------------
-    // Stage 1:
-    // Show wall length verification overlay
+    // Stage: doors
     // --------------------------------------------
 
-    if (!pendingVerification) {
+    if (stage === 'doors') {
+
+      exitDoorMode();
+
+      stage = 'verify';
 
       drawWallLengthOverlay();
 
-
       status.textContent =
-        "Compare the blue labels against the image's printed dimensions. Click \"Confirm & Save Room\" to save, or Cancel to keep editing corners.";
-
+        'Compare the blue labels against the image\'s printed dimensions. Click "Confirm & Save Room" to save, or Cancel to keep editing.';
 
       finishRoomBtn.textContent =
         'Confirm & Save Room';
 
-
       cancelVerifyBtn.style.display =
         'inline-block';
 
-
-      pendingVerification =
-        true;
-
-
       return;
     }
 
 
     // --------------------------------------------
-    // Stage 2:
-    // Ask for room ID
+    // Stage: verify
     // --------------------------------------------
 
-    const roomId =
-      prompt(
-        'Enter a room ID (e.g. "bedroom"):'
-      );
+    if (stage === 'verify') {
 
-
-    if (
-      !roomId ||
-      !roomId.trim()
-    ) {
-
-      status.textContent =
-        'Room not saved — enter an ID to confirm.';
-
-      return;
-    }
-
-
-    // --------------------------------------------
-    // Ask for display label
-    // --------------------------------------------
-
-    const roomLabel =
-      prompt(
-        'Enter a display label (e.g. "Bedroom"):'
-      );
-
-
-    if (
-      !roomLabel ||
-      !roomLabel.trim()
-    ) {
-
-      status.textContent =
-        'Room not saved — enter a display label to confirm.';
-
-      return;
-    }
-
-
-    // --------------------------------------------
-    // Commit room
-    // --------------------------------------------
-
-    const result =
-      commitCurrentRoom(
-        roomId.trim(),
-        roomLabel.trim()
-      );
-
-
-    // --------------------------------------------
-    // Commit failed
-    // --------------------------------------------
-
-    if (!result.success) {
+      const roomId =
+        prompt(
+          'Enter a room ID (e.g. "bedroom"):'
+        );
 
       if (
-        result.reason === 'duplicate_id'
+        !roomId ||
+        !roomId.trim()
       ) {
 
-        alert(
-          `Room ID "${roomId.trim()}" is already used. Please choose a different, unique ID.`
-        );
+        status.textContent =
+          'Room not saved — enter an ID to confirm.';
 
-      } else {
-
-        alert(
-          'You need at least 3 corners before finishing this room.'
-        );
+        return;
       }
 
 
+      const roomLabel =
+        prompt(
+          'Enter a display label (e.g. "Bedroom"):'
+        );
+
+      if (
+        !roomLabel ||
+        !roomLabel.trim()
+      ) {
+
+        status.textContent =
+          'Room not saved — enter a display label to confirm.';
+
+        return;
+      }
+
+
+      // ------------------------------------------
+      // Commit
+      // ------------------------------------------
+
+      const result =
+        commitCurrentRoom(
+          roomId.trim(),
+          roomLabel.trim()
+        );
+
+
+      // ------------------------------------------
+      // Commit failed
+      // ------------------------------------------
+
+      if (!result.success) {
+
+        if (
+          result.reason === 'duplicate_id'
+        ) {
+
+          alert(
+            `Room ID "${roomId.trim()}" is already used. Please choose a different, unique ID.`
+          );
+
+        } else {
+
+          alert(
+            'You need at least 3 corners before finishing this room.'
+          );
+        }
+
+        status.textContent =
+          'Room not saved.';
+
+        resetStage();
+
+        return;
+      }
+
+
+      // ------------------------------------------
+      // Successfully committed
+      // ------------------------------------------
+
+      resetStage();
+
+      stopTracing();
+
+      if (cancelRoomBtn) {
+        cancelRoomBtn.style.display =
+          'none';
+      }
+
+      addRoomBtn.textContent =
+        'Add Another Room';
+
       status.textContent =
-        'Room not saved.';
-
-
-      resetVerificationState();
-
-      return;
+        `${getCompletedRoomCount()} room(s) traced. Click "Add Another Room" to continue, or "Preview in 3D" when done.`;
     }
-
-
-    // --------------------------------------------
-    // Successfully committed room
-    //
-    // IMPORTANT:
-    // Stop accepting canvas clicks until the
-    // user explicitly presses "Add Another Room".
-    // --------------------------------------------
-
-    resetVerificationState();
-
-    stopTracing();
-
-
-    addRoomBtn.textContent =
-      'Add Another Room';
-
-
-    status.textContent =
-      `${getCompletedRoomCount()} room(s) traced. Click "Add Another Room" to continue, or "Preview in 3D" when done.`;
   }
 );
 
@@ -544,32 +570,67 @@ cancelVerifyBtn.addEventListener(
   'click',
   () => {
 
-    resetVerificationState();
-
-
-    // --------------------------------------------
-    // Remove blue measurement overlay and return
-    // to normal corner-editing view.
-    // --------------------------------------------
+    resetStage();
 
     redrawImage();
 
-
     const corners =
       getCorners();
-
-
-    // --------------------------------------------
-    // Tracing remains active here.
-    //
-    // User is still editing the current room,
-    // so they can continue clicking corners.
-    // --------------------------------------------
 
     status.textContent =
       `Back to editing. ${corners.length} corner(s) placed — click more, or Finish This Room again when ready.`;
   }
 );
+
+
+// --------------------------------------------------
+// Cancel current room
+// --------------------------------------------------
+
+if (cancelRoomBtn) {
+
+  cancelRoomBtn.addEventListener(
+    'click',
+    () => {
+
+      // ------------------------------------------
+      // Abort ONLY the current room
+      //
+      // Completed rooms remain untouched.
+      // Calibration remains untouched.
+      // ------------------------------------------
+
+      resetCurrentRoomCorners();
+
+      resetStage();
+
+      stopTracing();
+
+      redrawImage();
+
+      cancelRoomBtn.style.display =
+        'none';
+
+      addRoomBtn.textContent =
+        getCompletedRoomCount() > 0
+          ? 'Add Another Room'
+          : 'Add Room';
+
+      if (
+        getCompletedRoomCount() > 0
+      ) {
+
+        status.textContent =
+          `${getCompletedRoomCount()} room(s) traced. Current room cancelled. Click "Add Another Room" to continue.`;
+
+      } else {
+
+        status.textContent =
+          'Current room cancelled. Click "Add Room" to begin.';
+      }
+    }
+  );
+}
 
 
 // --------------------------------------------------
@@ -579,10 +640,6 @@ cancelVerifyBtn.addEventListener(
 preview3dBtn.addEventListener(
   'click',
   () => {
-
-    // --------------------------------------------
-    // Need at least one completed room
-    // --------------------------------------------
 
     if (
       getCompletedRoomCount() === 0
@@ -595,25 +652,20 @@ preview3dBtn.addEventListener(
       return;
     }
 
-
-    // --------------------------------------------
-    // Stop tracing before leaving for 3D
-    // --------------------------------------------
-
+    // Stop tracing
     stopTracing();
 
+    resetStage();
 
-    // --------------------------------------------
-    // Save ALL completed rooms
-    // --------------------------------------------
+    if (cancelRoomBtn) {
+      cancelRoomBtn.style.display =
+        'none';
+    }
 
+    // Save all completed rooms
     saveAllRoomsForPreview();
 
-
-    // --------------------------------------------
     // Open 3D viewer
-    // --------------------------------------------
-
     window.open(
       '/index.html',
       '_blank'
@@ -631,25 +683,27 @@ recalibrateBtn.addEventListener(
   () => {
 
     // --------------------------------------------
-    // This is a COMPLETE reset:
+    // COMPLETE reset
     //
+    // This DOES remove:
     // - calibration
     // - current room
     // - completed rooms
-    // - visual overlays
-    // - tracing state
     // --------------------------------------------
 
     startRecalibration();
 
-    resetVerificationState();
+    resetStage();
 
     stopTracing();
 
+    if (cancelRoomBtn) {
+      cancelRoomBtn.style.display =
+        'none';
+    }
 
     addRoomBtn.textContent =
       'Add Room';
-
 
     status.textContent =
       'Trace cleared. Click "Add Room" to start a new calibration.';
