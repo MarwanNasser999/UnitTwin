@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { applyPBRTexture } from './textures.js';
 
-const WALL_HEIGHT = 2.5;
-const WALL_THICKNESS = 0.1;
+import { PRESENTATION_SCALE } from './config.js'; // must match main.js/furniture.js
+const WALL_HEIGHT = 2.5 * PRESENTATION_SCALE;
+const WALL_THICKNESS = 0.1 * PRESENTATION_SCALE;
 
 function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
   const segLength = toDist - fromDist;

@@ -58,7 +58,7 @@ function getActiveFloorPlan() {
  * Real 3.0m room width
  * -> rendered as 3.3 world units.
  */
-const PRESENTATION_SCALE = 1.1;
+import { PRESENTATION_SCALE } from './config.js';
 
 
 /*
@@ -1263,7 +1263,7 @@ document.addEventListener(
 
 
 const PLAYER_RADIUS =
-  0.05;
+  0.3;
 
 
 const collisionRaycaster =

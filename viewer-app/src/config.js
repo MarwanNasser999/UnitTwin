@@ -1,0 +1,1 @@
+export const PRESENTATION_SCALE = 1.1;

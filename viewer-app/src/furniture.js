@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { furnitureCatalog } from './furnitureData.js';
 import { loadFurnitureModel } from './models.js';
 
-const PRESENTATION_SCALE = 1.1;
+import { PRESENTATION_SCALE } from './config.js';
 
 
 function createPlaceholderMesh(
