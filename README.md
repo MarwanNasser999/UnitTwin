@@ -59,8 +59,15 @@ viewer-app/
             offset/width and attached to the correct wall's `openings`
             in the generated data. Integrated into the per-room flow
             (corners → doors → verify → confirm), not a separate pass.
-      - [ ] V3 — Multiple rooms with properly shared walls (avoid duplicate
-            wall generation, connect adjacent rooms correctly)
+      - [x] V3 — Multiple rooms with properly shared walls: solved via a
+            full redesign (shared wall-network model — trace walls once,
+            points snap/reuse automatically, rooms are defined by
+            selecting existing network points) rather than the original
+            per-room-trace-then-detect-duplicates approach, which
+            couldn't handle partial wall sharing. Includes: point
+            snapping, self-intersection validation, open-boundary support
+            (untraced segments = intentional doorways/openings, replacing
+            the separate "Mark Doors" feature entirely).
       - [ ] V4 — Automated CAD/DXF/vector-PDF parsing; VLM-based parsing for
             scanned/rasterized plans as a further stretch tier
 - [ ] Wall/floor/ceiling selection needs re-verification once V2/V3 (real
@@ -73,6 +80,23 @@ viewer-app/
       window") — intent extraction → scene resolution → validated transform
 - [ ] Phase 8 — User's own furniture integration (photo → 3D asset, real CV)
 - [ ] Phase 9 — Multi-developer platform
+- [ ] **Phase 10 — Pricing structure.** One unified plan for all users
+      (developers, architects, designers alike) — no separate pricing
+      pages per customer type. Each tier bundles BOTH unit/project count
+      AND feature access together (texture library size, real furniture
+      models, export options, analytics, white-labeling) — a higher tier
+      means more units AND more features, not a choice between the two.
+      The tier *structure* is a decided, finished-product requirement,
+      not an afterthought — designed before Phase 5's backend is built,
+      so accounts/data model support it correctly from day one. Exact
+      dollar amounts and tier boundaries still need real market research
+      (what developers pay for model units/renders, what architects pay
+      for SketchUp/Revit licenses) before finalizing numbers. Rough shape
+      to refine: Free (1-2 units, flat colors only, no export) → Mid
+      (moderate units, full textures, real furniture, save/export) →
+      Higher (large/unlimited units, priority support, white-label,
+      analytics). Enforcement depends on Phase 5 existing; the structure
+      itself does not.
 - [ ] **Visual quality overhaul (required before this is a sellable
       product)** — current furniture/materials prove the mechanism, not
       the final look. Needs: high-quality furniture assets with real
@@ -129,6 +153,19 @@ viewer-app/
   a bug workaround — if revisited, change `PRESENTATION_SCALE` in
   `main.js` and `furniture.js` (currently duplicated — should move to a
   shared constant if touched again) and the camera FOV in `main.js`.
+
+## Target Customers
+
+- **Real estate developers** (primary, original target) — selling off-plan
+  units, want buyers to walk through a unit before it's built.
+- **Architects / Interior Designers** (secondary, identified later) — use
+  this instead of/alongside AutoCAD-style tools for client-facing design
+  iteration and walkthroughs, not technical drafting. Different priorities
+  than developers: fast layout variants, before/after comparison, precise
+  measurement, style/furniture swapping, accurate CAD import (Phase 4 V4)
+  matters more for this audience specifically. This changes competitive
+  positioning too — less "vs. Matterport," more "vs. presenting a
+  SketchUp/Revit model to a client," which is a less crowded wedge.
 
 ## Known Limitations (tracked, not forgotten)
 
