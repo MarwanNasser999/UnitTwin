@@ -57,13 +57,30 @@ function buildWall(wallData) {
   return group;
 }
 
-function buildRoomShape(corners) {
-  const shape = new THREE.Shape();
-  shape.moveTo(corners[0].x, corners[0].z);
-  for (let i = 1; i < corners.length; i++) {
-    shape.lineTo(corners[i].x, corners[i].z);
+function signedArea(corners) {
+  let sum = 0;
+  for (let i = 0; i < corners.length; i++) {
+    const a = corners[i];
+    const b = corners[(i + 1) % corners.length];
+    sum += a.x * b.z - b.x * a.z;
   }
-  shape.lineTo(corners[0].x, corners[0].z);
+  return sum / 2;
+}
+
+function buildRoomShape(corners) {
+  const cleaned = corners.filter((c, i) => {
+    const prev = corners[(i - 1 + corners.length) % corners.length];
+    return Math.hypot(c.x - prev.x, c.z - prev.z) > 0.01;
+  });
+
+  const ordered = signedArea(cleaned) < 0 ? [...cleaned].reverse() : cleaned;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(ordered[0].x, ordered[0].z);
+  for (let i = 1; i < ordered.length; i++) {
+    shape.lineTo(ordered[i].x, ordered[i].z);
+  }
+  shape.lineTo(ordered[0].x, ordered[0].z);
   return shape;
 }
 
@@ -109,7 +126,7 @@ function createFloor(corners) {
   });
   const floor = new THREE.Mesh(geometry, material);
   floor.name = 'floor';
-  floor.rotation.x = -Math.PI / 2;
+  floor.rotation.x = Math.PI / 2;
 
   return floor;
 }
@@ -143,12 +160,12 @@ export function buildFloorPlan(floorPlan) {
   root.add(wallsGroup);
 
   for (const roomData of floorPlan.rooms) {
-    const roomGroup = new THREE.Group();
-    roomGroup.name = roomData.id;
-    roomGroup.add(createFloor(roomData.corners));
-    roomGroup.add(createCeiling(roomData.corners, WALL_HEIGHT));
-    root.add(roomGroup);
-  }
+  const roomGroup = new THREE.Group();
+  roomGroup.name = roomData.id;
+  roomGroup.add(createFloor(roomData.corners));
+  roomGroup.add(createCeiling(roomData.corners, WALL_HEIGHT)); // re-enabled
+  root.add(roomGroup);
+}
 
   return root;
 }

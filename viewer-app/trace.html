@@ -16,7 +16,7 @@
       padding: 12px;
       background: #222;
       display: flex;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
       flex-wrap: wrap;
     }
@@ -32,18 +32,33 @@
       padding: 6px 12px;
       cursor: pointer;
     }
+    #status {
+      flex-basis: 100%;
+      opacity: 0.85;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
 
   <div id="toolbar">
     <input type="file" id="image-input" accept="image/*" />
-    <button id="add-room-btn">Add Room</button>
-    <button id="cancel-room-btn" style="display: none;">Cancel Room</button>
-    <button id="finish-room-btn">Finish This Room</button>
-    <button id="cancel-verify-btn" style="display: none;">Cancel</button>
-    <button id="recalibrate-btn">Recalibrate</button>
+
+    <button id="calibrate-btn" style="display: none;">Calibrate</button>
+
+    <button id="trace-walls-btn" style="display: none;">Trace Walls</button>
+    <button id="new-wall-chain-btn" style="display: none;">New Wall Chain</button>
+    <button id="finish-walls-btn" style="display: none;">Finish Walls</button>
+
+    <button id="define-room-btn" style="display: none;">Define Room</button>
+    <button id="finish-room-btn" style="display: none;">Finish This Room</button>
+    <button id="cancel-room-btn" style="display: none;">Cancel</button>
+
+    <button id="undo-btn" style="display: none;">Undo Last Point</button>
+
+    <button id="start-over-btn">Start Over</button>
     <button id="preview-3d-btn">Preview in 3D</button>
+
     <span id="status">Load a floor plan image to begin.</span>
   </div>
 

@@ -2,37 +2,42 @@ let canvas = null;
 let ctx = null;
 let loadedImage = null;
 
+// --------------------------------------------------
+// Calibration
+// --------------------------------------------------
 let calibrationPoints = [];
 let pixelsPerMeter = null;
-let corners = [];
 
 // --------------------------------------------------
-// Door state
+// Shared wall network
 // --------------------------------------------------
+let networkPoints = []; // { id, pixelX, pixelY, meterX, meterZ }
+let networkWalls = [];  // { id, pointA, pointB }
+let nextPointId = 1;
+let nextWallId = 1;
 
-let doorMode = false;
-let selectedWallIndex = null;
-let doorClickPoints = [];
-let roomDoors = [];
-
-// --------------------------------------------------
-// Completed rooms
-// --------------------------------------------------
-
-// {
-//   walls: [...],
-//   room: {...},
-//   rawCorners: [...]
-// }
-
-let completedRooms = [];
-
-let tracingActive = false;
-
+let currentChainPointId = null;
+// History of clicks made during the current wall chain, so Undo can
+// precisely reverse them: { wallId|null, pointId, pointWasNew }
+let wallChainHistory = [];
 
 // --------------------------------------------------
-// Canvas initialization
+// Rooms
 // --------------------------------------------------
+let completedRooms = []; // { id, label, pointIds, wallIds, openSegments }
+let currentRoomPointIds = [];
+
+// --------------------------------------------------
+// Mode: 'idle' | 'calibrate' | 'walls' | 'room'
+// --------------------------------------------------
+let mode = 'idle';
+
+const SNAP_TOLERANCE_PX = 18; // clicking within this many pixels of an
+// existing point always reuses it — never creates a duplicate on top
+
+// ==================================================
+// Canvas / image
+// ==================================================
 
 export function initCanvas() {
   canvas = document.getElementById('trace-canvas');
@@ -45,60 +50,9 @@ export function initCanvas() {
   ctx = canvas.getContext('2d');
 }
 
-
-// --------------------------------------------------
-// Tracing state
-// --------------------------------------------------
-
-export function startTracing() {
-  tracingActive = true;
+export function getCanvas() {
+  return canvas;
 }
-
-export function isTracingActive() {
-  return tracingActive;
-}
-
-export function stopTracing() {
-  tracingActive = false;
-}
-
-
-// --------------------------------------------------
-// Door mode state
-// --------------------------------------------------
-
-export function enterDoorMode() {
-  doorMode = true;
-  selectedWallIndex = null;
-  doorClickPoints = [];
-}
-
-export function exitDoorMode() {
-  doorMode = false;
-  selectedWallIndex = null;
-  doorClickPoints = [];
-}
-
-export function isDoorMode() {
-  return doorMode;
-}
-
-
-// --------------------------------------------------
-// Clear current room doors
-// --------------------------------------------------
-
-export function clearRoomDoors() {
-  roomDoors = [];
-
-  selectedWallIndex = null;
-  doorClickPoints = [];
-}
-
-
-// --------------------------------------------------
-// Image loading
-// --------------------------------------------------
 
 export function loadImageFile(file, onLoaded) {
   const reader = new FileReader();
@@ -119,25 +73,24 @@ export function loadImageFile(file, onLoaded) {
         canvas.height
       );
 
-      ctx.drawImage(
-        img,
-        0,
-        0
-      );
+      ctx.drawImage(img, 0, 0);
 
-      // New image = completely new tracing session
       calibrationPoints = [];
       pixelsPerMeter = null;
-      corners = [];
-      roomDoors = [];
+
+      networkPoints = [];
+      networkWalls = [];
+
+      nextPointId = 1;
+      nextWallId = 1;
+
+      currentChainPointId = null;
+      wallChainHistory = [];
+
       completedRooms = [];
+      currentRoomPointIds = [];
 
-      tracingActive = false;
-
-      // Reset door state
-      doorMode = false;
-      selectedWallIndex = null;
-      doorClickPoints = [];
+      mode = 'idle';
 
       if (onLoaded) {
         onLoaded();
@@ -158,33 +111,12 @@ export function loadImageFile(file, onLoaded) {
   reader.readAsDataURL(file);
 }
 
-
-// --------------------------------------------------
-// Get canvas
-// --------------------------------------------------
-
-export function getCanvas() {
-  return canvas;
-}
-
-
-// --------------------------------------------------
-// Check calibration
-// --------------------------------------------------
-
 export function isCalibrated() {
   return pixelsPerMeter !== null;
 }
 
-
-// --------------------------------------------------
-// Redraw original image only
-// --------------------------------------------------
-
 export function redrawImage() {
-  if (!loadedImage) {
-    return;
-  }
+  if (!loadedImage) return;
 
   ctx.clearRect(
     0,
@@ -200,432 +132,207 @@ export function redrawImage() {
   );
 }
 
+// ==================================================
+// Drawing
+// ==================================================
 
-// --------------------------------------------------
-// Redraw current room only
-// --------------------------------------------------
+function drawMarker(
+  x,
+  y,
+  color,
+  radius = 6
+) {
+  if (!ctx) return;
 
-function redrawAllRooms() {
+  ctx.beginPath();
 
-  // IMPORTANT:
-  // Do NOT draw completed rooms here.
-  // Visually we only show the room currently being traced.
+  ctx.arc(
+    x,
+    y,
+    radius,
+    0,
+    Math.PI * 2
+  );
 
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawWallLine(
+  a,
+  b,
+  color,
+  width = 3
+) {
+  ctx.beginPath();
+
+  ctx.moveTo(
+    a.pixelX,
+    a.pixelY
+  );
+
+  ctx.lineTo(
+    b.pixelX,
+    b.pixelY
+  );
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
+function drawWallLabel(
+  a,
+  b,
+  text
+) {
+  const midX =
+    (a.pixelX + b.pixelX) / 2;
+
+  const midY =
+    (a.pixelY + b.pixelY) / 2;
+
+  ctx.font = 'bold 13px sans-serif';
+  ctx.fillStyle = '#00aaff';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 3;
+
+  ctx.strokeText(
+    text,
+    midX + 6,
+    midY - 6
+  );
+
+  ctx.fillText(
+    text,
+    midX + 6,
+    midY - 6
+  );
+}
+
+export function redrawAll() {
   redrawImage();
 
-  // Draw current room corners only
-  for (const c of corners) {
+  // Draw all network walls
+  for (const wall of networkWalls) {
+    const a = getPoint(wall.pointA);
+    const b = getPoint(wall.pointB);
+
+    if (!a || !b) continue;
+
+    drawWallLine(
+      a,
+      b,
+      '#00aaff',
+      2
+    );
+
+    const lengthM = Math.hypot(
+      b.meterX - a.meterX,
+      b.meterZ - a.meterZ
+    );
+
+    drawWallLabel(
+      a,
+      b,
+      `${lengthM.toFixed(2)}m`
+    );
+  }
+
+  // Draw all network points
+  for (const point of networkPoints) {
     drawMarker(
-      c.pixelX,
-      c.pixelY,
-      '#ff4444'
+      point.pixelX,
+      point.pixelY,
+      '#ffffff',
+      4
     );
   }
-}
 
-
-// --------------------------------------------------
-// Find closest wall and project click onto wall
-// --------------------------------------------------
-
-function findClosestWallAndProjection(
-  pixelX,
-  pixelY
-) {
-  let closestWallIndex = -1;
-  let closestDist = Infinity;
-  let closestProjection = null;
-
-  for (
-    let i = 0;
-    i < corners.length;
-    i++
-  ) {
-    const a = corners[i];
-
-    const b =
-      corners[
-        (i + 1) % corners.length
-      ];
-
-    const dx =
-      b.pixelX - a.pixelX;
-
-    const dy =
-      b.pixelY - a.pixelY;
-
-    const lengthSq =
-      dx * dx +
-      dy * dy;
-
-    // Avoid division by zero
-    if (lengthSq === 0) {
-      continue;
-    }
-
-    // How far along the wall the closest
-    // projected point is.
-    let t =
-      (
-        (pixelX - a.pixelX) * dx +
-        (pixelY - a.pixelY) * dy
-      ) / lengthSq;
-
-    // Clamp projection to the actual wall segment
-    t = Math.max(
-      0,
-      Math.min(1, t)
-    );
-
-    const projX =
-      a.pixelX + t * dx;
-
-    const projY =
-      a.pixelY + t * dy;
-
-    const dist =
-      Math.hypot(
-        pixelX - projX,
-        pixelY - projY
-      );
-
-    if (dist < closestDist) {
-      closestDist = dist;
-      closestWallIndex = i;
-
-      closestProjection = {
-        pixelX: projX,
-        pixelY: projY,
-        t,
-      };
-    }
-  }
-
-  return {
-    wallIndex: closestWallIndex,
-    projection: closestProjection,
-    distance: closestDist,
-  };
-}
-
-
-// --------------------------------------------------
-// Door mode click handling
-// --------------------------------------------------
-
-export function onDoorModeClick(
-  pixelX,
-  pixelY,
-  onDoorPlaced
-) {
-  const {
-    wallIndex,
-    projection,
-    distance,
-  } = findClosestWallAndProjection(
-    pixelX,
-    pixelY
-  );
-
-  // How close the user needs to click
-  // to a wall.
-  const CLICK_TOLERANCE_PX = 25;
-
-  // Click too far away from every wall
+  // Draw current room being traced
   if (
-    wallIndex === -1 ||
-    !projection ||
-    distance > CLICK_TOLERANCE_PX
+    mode === 'room' &&
+    currentRoomPointIds.length > 0
   ) {
-    return;
-  }
+    const pts =
+      currentRoomPointIds
+        .map(getPoint)
+        .filter(Boolean);
 
-  // First click selects the wall
-  if (selectedWallIndex === null) {
-    selectedWallIndex = wallIndex;
-    doorClickPoints = [];
-  }
-
-  // Do not allow changing walls
-  // while placing the same door.
-  else if (
-    wallIndex !== selectedWallIndex
-  ) {
-    return;
-  }
-
-  // Store projected point
-  doorClickPoints.push(projection);
-
-  // Draw yellow door marker
-  drawMarker(
-    projection.pixelX,
-    projection.pixelY,
-    '#ffdd00'
-  );
-
-  // Two points = complete door opening
-  if (doorClickPoints.length === 2) {
-
-    const a =
-      corners[selectedWallIndex];
-
-    const b =
-      corners[
-        (selectedWallIndex + 1) %
-        corners.length
-      ];
-
-    // Actual wall length in meters
-    const wallLengthMeters =
-      Math.hypot(
-        b.meterX - a.meterX,
-        b.meterZ - a.meterZ
+    for (
+      let i = 0;
+      i < pts.length - 1;
+      i++
+    ) {
+      drawWallLine(
+        pts[i],
+        pts[i + 1],
+        '#ffaa00',
+        4
       );
+    }
 
-    const t1 =
-      doorClickPoints[0].t;
-
-    const t2 =
-      doorClickPoints[1].t;
-
-    // Door can be clicked in either direction.
-    // Always store the smaller t as the offset.
-    const offsetT =
-      Math.min(
-        t1,
-        t2
+    for (const p of pts) {
+      drawMarker(
+        p.pixelX,
+        p.pixelY,
+        '#ffaa00',
+        6
       );
-
-    const widthT =
-      Math.abs(
-        t2 - t1
-      );
-
-    const door = {
-      wallIndex: selectedWallIndex,
-
-      offset: parseFloat(
-        (
-          offsetT *
-          wallLengthMeters
-        ).toFixed(3)
-      ),
-
-      width: parseFloat(
-        (
-          widthT *
-          wallLengthMeters
-        ).toFixed(3)
-      ),
-    };
-
-    roomDoors.push(door);
-
-    // Reset selection so another door
-    // can be placed on any wall.
-    selectedWallIndex = null;
-    doorClickPoints = [];
-
-    if (onDoorPlaced) {
-      onDoorPlaced(roomDoors);
     }
   }
 }
 
-
-// --------------------------------------------------
-// Get current room doors
-// --------------------------------------------------
-
-export function getRoomDoors() {
-  return roomDoors;
+function getPoint(id) {
+  return (
+    networkPoints.find(
+      (p) => p.id === id
+    ) || null
+  );
 }
 
+// ==================================================
+// Calibration
+// ==================================================
 
-// --------------------------------------------------
-// Canvas click handling
-// --------------------------------------------------
+export function enterCalibrateMode() {
+  mode = 'calibrate';
+  calibrationPoints = [];
+}
 
-export function onCanvasClick(
+function handleCalibrationClick(
   pixelX,
   pixelY,
-  onCalibrationNeeded,
-  onCornerAdded,
-  onSuspiciousOrder
+  onCalibrationNeeded
 ) {
-
-  // ----------------------------------------------
-  // IMPORTANT:
-  // Ignore ALL canvas clicks until the user
-  // explicitly presses "Add Room".
-  // ----------------------------------------------
-
-  if (!tracingActive) {
-    return;
-  }
-
-
-  // ----------------------------------------------
-  // Door mode
-  // ----------------------------------------------
-
-  if (doorMode) {
-    onDoorModeClick(
-      pixelX,
-      pixelY,
-      null
-    );
-
-    return;
-  }
-
-
-  // ----------------------------------------------
-  // Calibration phase
-  // ----------------------------------------------
-
-  if (calibrationPoints.length < 2) {
-
-    calibrationPoints.push({
-      x: pixelX,
-      y: pixelY,
-    });
-
-    drawMarker(
-      pixelX,
-      pixelY,
-      '#00ff00'
-    );
-
-    if (
-      calibrationPoints.length === 2 &&
-      onCalibrationNeeded
-    ) {
-      onCalibrationNeeded(
-        calibrationPoints
-      );
-    }
-
-    return;
-  }
-
-
-  // ----------------------------------------------
-  // Waiting for calibration
-  // ----------------------------------------------
-
-  if (pixelsPerMeter === null) {
-    return;
-  }
-
-
-  // ----------------------------------------------
-  // Corner tracing phase
-  // ----------------------------------------------
-
-  const origin =
-    calibrationPoints[0];
-
-  const meterX =
-    (pixelX - origin.x) /
-    pixelsPerMeter;
-
-  const meterZ =
-    (pixelY - origin.y) /
-    pixelsPerMeter;
-
-
-  // ----------------------------------------------
-  // Check direction / angle constraint
-  // ----------------------------------------------
-
-  if (corners.length >= 1) {
-
-    const prev =
-      corners[
-        corners.length - 1
-      ];
-
-    const dx =
-      meterX - prev.meterX;
-
-    const dz =
-      meterZ - prev.meterZ;
-
-    // Ignore a click directly on the previous
-    // corner to avoid an unnecessary warning.
-    if (
-      dx !== 0 ||
-      dz !== 0
-    ) {
-
-      // Angle relative to horizontal/vertical axis
-      const angleDeg =
-        Math.abs(
-          Math.atan2(
-            dz,
-            dx
-          ) *
-          (180 / Math.PI)
-        ) % 90;
-
-      const DIAGONAL_TOLERANCE = 20;
-
-      if (
-        angleDeg >
-          DIAGONAL_TOLERANCE &&
-        angleDeg <
-          (90 - DIAGONAL_TOLERANCE) &&
-        onSuspiciousOrder
-      ) {
-
-        const proceed =
-          onSuspiciousOrder(
-            angleDeg
-          );
-
-        // User chose Cancel.
-        // Do not add this corner.
-        if (!proceed) {
-          return;
-        }
-      }
-    }
-  }
-
-
-  // ----------------------------------------------
-  // Add corner
-  // ----------------------------------------------
-
-  corners.push({
-    pixelX,
-    pixelY,
-    meterX,
-    meterZ,
+  calibrationPoints.push({
+    x: pixelX,
+    y: pixelY
   });
 
   drawMarker(
     pixelX,
     pixelY,
-    '#ff4444'
+    '#00ff00'
   );
 
-  if (onCornerAdded) {
-    onCornerAdded(corners);
+  if (
+    calibrationPoints.length === 2 &&
+    onCalibrationNeeded
+  ) {
+    onCalibrationNeeded(
+      calibrationPoints
+    );
   }
 }
-
-
-// --------------------------------------------------
-// Set calibration distance
-// --------------------------------------------------
 
 export function setCalibrationDistance(
   realMeters
 ) {
-
   if (
     calibrationPoints.length !== 2
   ) {
@@ -642,11 +349,10 @@ export function setCalibrationDistance(
   const [a, b] =
     calibrationPoints;
 
-  const pixelDist =
-    Math.hypot(
-      b.x - a.x,
-      b.y - a.y
-    );
+  const pixelDist = Math.hypot(
+    b.x - a.x,
+    b.y - a.y
+  );
 
   if (pixelDist === 0) {
     return false;
@@ -655,660 +361,670 @@ export function setCalibrationDistance(
   pixelsPerMeter =
     pixelDist / realMeters;
 
-  // Debug information for scale diagnosis
-  console.log(
-    '[TRACE] Calibration completed:',
-    {
-      point1: a,
-      point2: b,
-      pixelDistance: pixelDist,
-      realDistanceMeters: realMeters,
-      pixelsPerMeter,
-    }
-  );
+  mode = 'idle';
 
   return true;
 }
 
-
-// --------------------------------------------------
-// Draw marker
-// --------------------------------------------------
-
-function drawMarker(
-  x,
-  y,
-  color
+function pixelToMeter(
+  pixelX,
+  pixelY
 ) {
+  const origin =
+    calibrationPoints[0];
 
-  if (!ctx) {
+  return {
+    meterX:
+      (pixelX - origin.x) /
+      pixelsPerMeter,
+
+    meterZ:
+      (pixelY - origin.y) /
+      pixelsPerMeter
+  };
+}
+
+// ==================================================
+// Mode control
+// ==================================================
+
+export function getMode() {
+  return mode;
+}
+
+export function enterWallMode() {
+  mode = 'walls';
+
+  currentChainPointId = null;
+  wallChainHistory = [];
+}
+
+export function breakWallChain() {
+  currentChainPointId = null;
+  wallChainHistory = [];
+}
+
+export function exitWallMode() {
+  mode = 'idle';
+
+  currentChainPointId = null;
+  wallChainHistory = [];
+}
+
+export function enterRoomMode() {
+  mode = 'room';
+  currentRoomPointIds = [];
+}
+
+export function exitRoomMode() {
+  mode = 'idle';
+  currentRoomPointIds = [];
+
+  redrawAll();
+}
+
+// ==================================================
+// Point snapping
+// ==================================================
+
+function findNearbyPoint(
+  pixelX,
+  pixelY,
+  tolerance
+) {
+  let closest = null;
+  let closestDist = Infinity;
+
+  for (const p of networkPoints) {
+    const dist = Math.hypot(
+      p.pixelX - pixelX,
+      p.pixelY - pixelY
+    );
+
+    if (
+      dist < tolerance &&
+      dist < closestDist
+    ) {
+      closest = p;
+      closestDist = dist;
+    }
+  }
+
+  return closest;
+}
+
+function createPoint(
+  pixelX,
+  pixelY
+) {
+  const {
+    meterX,
+    meterZ
+  } = pixelToMeter(
+    pixelX,
+    pixelY
+  );
+
+  const point = {
+    id: `p${nextPointId++}`,
+    pixelX,
+    pixelY,
+    meterX,
+    meterZ
+  };
+
+  networkPoints.push(point);
+
+  return point;
+}
+
+// ==================================================
+// Wall tracing mode
+// ==================================================
+
+function handleWallModeClick(
+  pixelX,
+  pixelY
+) {
+  let point = findNearbyPoint(
+    pixelX,
+    pixelY,
+    SNAP_TOLERANCE_PX
+  );
+
+  let pointWasNew = false;
+
+  if (!point) {
+    point = createPoint(
+      pixelX,
+      pixelY
+    );
+
+    pointWasNew = true;
+  }
+
+  let createdWallId = null;
+
+  if (
+    currentChainPointId &&
+    currentChainPointId !== point.id
+  ) {
+    const alreadyExists =
+      networkWalls.some(
+        (w) =>
+          (
+            w.pointA ===
+              currentChainPointId &&
+            w.pointB === point.id
+          ) ||
+          (
+            w.pointA === point.id &&
+            w.pointB ===
+              currentChainPointId
+          )
+      );
+
+    if (!alreadyExists) {
+      const wall = {
+        id: `w${nextWallId++}`,
+        pointA:
+          currentChainPointId,
+        pointB: point.id
+      };
+
+      networkWalls.push(wall);
+
+      createdWallId = wall.id;
+    }
+  }
+
+  wallChainHistory.push({
+    wallId: createdWallId,
+    pointId: point.id,
+    pointWasNew
+  });
+
+  currentChainPointId =
+    point.id;
+
+  redrawAll();
+}
+
+/**
+ * Undoes the most recent click in the current wall chain.
+ */
+export function undoLastWallPoint() {
+  const last =
+    wallChainHistory.pop();
+
+  if (!last) return;
+
+  if (last.wallId) {
+    networkWalls =
+      networkWalls.filter(
+        (w) =>
+          w.id !== last.wallId
+      );
+  }
+
+  if (last.pointWasNew) {
+    const stillUsed =
+      networkWalls.some(
+        (w) =>
+          w.pointA ===
+            last.pointId ||
+          w.pointB ===
+            last.pointId
+      );
+
+    if (!stillUsed) {
+      networkPoints =
+        networkPoints.filter(
+          (p) =>
+            p.id !==
+            last.pointId
+        );
+    }
+  }
+
+  const prev =
+    wallChainHistory[
+      wallChainHistory.length - 1
+    ];
+
+  currentChainPointId =
+    prev
+      ? prev.pointId
+      : null;
+
+  redrawAll();
+}
+
+// ==================================================
+// Room definition mode
+// ==================================================
+
+function handleRoomModeClick(
+  pixelX,
+  pixelY,
+  onNoPointNearby
+) {
+  const point =
+    findNearbyPoint(
+      pixelX,
+      pixelY,
+      SNAP_TOLERANCE_PX
+    );
+
+  if (!point) {
+    if (onNoPointNearby) {
+      onNoPointNearby();
+    }
+
     return;
   }
 
-  ctx.beginPath();
-
-  ctx.arc(
-    x,
-    y,
-    6,
-    0,
-    Math.PI * 2
+  currentRoomPointIds.push(
+    point.id
   );
 
-  ctx.fillStyle =
-    color;
-
-  ctx.fill();
-
-  ctx.strokeStyle =
-    '#000';
-
-  ctx.lineWidth =
-    1;
-
-  ctx.stroke();
+  redrawAll();
 }
 
-
-// --------------------------------------------------
-// Draw room overlay
-// --------------------------------------------------
-
-function drawRoomOverlay(
-  cornerList,
-  color
-) {
-
-  // Draw corners
-  for (const c of cornerList) {
-
-    drawMarker(
-      c.pixelX,
-      c.pixelY,
-      color
-    );
-  }
-
-
-  // Draw walls
-  for (
-    let i = 0;
-    i < cornerList.length;
-    i++
-  ) {
-
-    const a =
-      cornerList[i];
-
-    const b =
-      cornerList[
-        (i + 1) %
-        cornerList.length
-      ];
-
-    ctx.beginPath();
-
-    ctx.moveTo(
-      a.pixelX,
-      a.pixelY
-    );
-
-    ctx.lineTo(
-      b.pixelX,
-      b.pixelY
-    );
-
-    ctx.strokeStyle =
-      color;
-
-    ctx.lineWidth =
-      2;
-
-    ctx.stroke();
-  }
+export function getCurrentRoomPointCount() {
+  return currentRoomPointIds.length;
 }
 
+export function undoLastRoomPoint() {
+  currentRoomPointIds.pop();
 
-// --------------------------------------------------
-// Get current corners
-// --------------------------------------------------
-
-export function getCorners() {
-  return corners;
+  redrawAll();
 }
-
-
-// --------------------------------------------------
-// Get completed room count
-// --------------------------------------------------
 
 export function getCompletedRoomCount() {
   return completedRooms.length;
 }
 
-
-// --------------------------------------------------
-// Generate room data
-// --------------------------------------------------
-
-function generateRoomDataInternal(
-  roomId,
-  roomLabel
-) {
-
-  const wallEntries = [];
-
-  for (
-    let i = 0;
-    i < corners.length;
-    i++
-  ) {
-
-    const a =
-      corners[i];
-
-    const b =
-      corners[
-        (i + 1) % corners.length
-      ];
-
-
-    // --------------------------------------------
-    // Find door openings belonging to this wall
-    // --------------------------------------------
-
-    const wallOpenings =
-      roomDoors
-        .filter(
-          (door) =>
-            door.wallIndex === i
-        )
-        .map(
-          (door) => ({
-            offset: door.offset,
-            width: door.width,
-          })
-        );
-
-
-    wallEntries.push({
-
-      id:
-        `wall_${roomId}_${i}`,
-
-      start: {
-
-        x:
-          parseFloat(
-            a.meterX.toFixed(3)
-          ),
-
-        z:
-          parseFloat(
-            a.meterZ.toFixed(3)
-          ),
-      },
-
-      end: {
-
-        x:
-          parseFloat(
-            b.meterX.toFixed(3)
-          ),
-
-        z:
-          parseFloat(
-            b.meterZ.toFixed(3)
-          ),
-      },
-
-      // Only add openings when
-      // this wall actually has doors.
-      ...(wallOpenings.length > 0
-        ? {
-            openings:
-              wallOpenings,
-          }
-        : {}),
-    });
-  }
-
-
-  const roomEntry = {
-
-    id:
-      roomId,
-
-    label:
-      roomLabel,
-
-    wallIds:
-      wallEntries.map(
-        (w) =>
-          w.id
-      ),
-
-    corners:
-      corners.map(
-        (c) => ({
-          x:
-            parseFloat(
-              c.meterX.toFixed(3)
-            ),
-
-          z:
-            parseFloat(
-              c.meterZ.toFixed(3)
-            ),
-        })
-      ),
-  };
-
-
-  return {
-
-    walls:
-      wallEntries,
-
-    room:
-      roomEntry,
-  };
+export function getNetworkWallCount() {
+  return networkWalls.length;
 }
 
+// ==================================================
+// Polygon validation
+// ==================================================
 
-// --------------------------------------------------
-// Draw wall length overlay
-// --------------------------------------------------
+/**
+ * Returns:
+ * 0 = collinear
+ * 1 = clockwise
+ * 2 = counter-clockwise
+ */
+function orientation(a, b, c) {
+  const val =
+    (b.z - a.z) *
+      (c.x - b.x) -
+    (b.x - a.x) *
+      (c.z - b.z);
 
-export function drawWallLengthOverlay() {
+  if (Math.abs(val) < 1e-9) {
+    return 0;
+  }
 
-  // Start from clean image
-  redrawAllRooms();
+  return val > 0 ? 1 : 2;
+}
 
+/**
+ * Checks whether point b lies on
+ * the segment from a to c.
+ */
+function onSegment(a, b, c) {
+  return (
+    Math.min(a.x, c.x) <= b.x &&
+    b.x <= Math.max(a.x, c.x) &&
+    Math.min(a.z, c.z) <= b.z &&
+    b.z <= Math.max(a.z, c.z)
+  );
+}
 
-  // Draw current room walls
+/**
+ * Checks whether two line segments intersect.
+ */
+function segmentsIntersect(p1, p2, p3, p4) {
+  function orientation(a, b, c) {
+    const val = (b.z - a.z) * (c.x - b.x) - (b.x - a.x) * (c.z - b.z);
+    if (Math.abs(val) < 1e-9) return 0;
+    return val > 0 ? 1 : 2;
+  }
+  function onSegment(a, b, c) {
+    return (
+      Math.min(a.x, c.x) <= b.x && b.x <= Math.max(a.x, c.x) &&
+      Math.min(a.z, c.z) <= b.z && b.z <= Math.max(a.z, c.z)
+    );
+  }
+
+  const o1 = orientation(p1, p2, p3);
+  const o2 = orientation(p1, p2, p4);
+  const o3 = orientation(p3, p4, p1);
+  const o4 = orientation(p3, p4, p2);
+
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(p1, p3, p2)) return true;
+  if (o2 === 0 && onSegment(p1, p4, p2)) return true;
+  if (o3 === 0 && onSegment(p3, p1, p4)) return true;
+  if (o4 === 0 && onSegment(p3, p2, p4)) return true;
+  return false;
+}
+
+/**
+ * Checks that the selected room points, connected in order, form a
+ * SIMPLE polygon — no two non-adjacent edges may cross. Prevents
+ * bowtie/self-intersecting shapes, which produce garbage geometry.
+ */
+function findSelfIntersection(points) {
+  const pts = points.map((id) => getPoint(id));
+  const n = pts.length;
+
+  for (let i = 0; i < n; i++) {
+    const a1 = pts[i];
+    const a2 = pts[(i + 1) % n];
+
+    for (let j = i + 1; j < n; j++) {
+      // Skip edges that share a point (adjacent edges always "touch"
+      // at their shared corner — that's not a crossing).
+      if (j === i || j === (i + 1) % n || (j + 1) % n === i) continue;
+
+      const b1 = pts[j];
+      const b2 = pts[(j + 1) % n];
+
+      if (segmentsIntersect(a1, a2, b1, b2)) {
+        return { i, j };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A room segment is valid whether or not a wall exists between two
+ * consecutive points — a missing wall means an intentional open
+ * boundary (this is how doorways/openings are represented, since a
+ * doorway drawn on a CAD plan is exactly a gap in the wall line).
+ */
+export function commitCurrentRoom(roomId, roomLabel) {
+  let points = [...currentRoomPointIds];
+  if (points.length > 1 && points[points.length - 1] === points[0]) {
+    points = points.slice(0, -1);
+  }
+
+  if (points.length < 3) {
+    return { success: false, reason: 'not_enough_points' };
+  }
+
+  const idTaken = completedRooms.some((r) => r.id === roomId);
+  if (idTaken) {
+    return { success: false, reason: 'duplicate_id' };
+  }
+
+  const intersection = findSelfIntersection(points);
+  if (intersection) {
+    return { success: false, reason: 'self_intersecting', ...intersection };
+  }
+
+  // ... rest unchanged (wall matching, pushing to completedRooms, etc.)
+
+  // ----------------------------------------------
+  // Wall matching
+  // ----------------------------------------------
+
+  const wallIds = [];
+  const openSegments = [];
+
   for (
     let i = 0;
-    i < corners.length;
+    i < points.length;
     i++
   ) {
-
-    const a =
-      corners[i];
+    const a = points[i];
 
     const b =
-      corners[
-        (i + 1) % corners.length
+      points[
+        (i + 1) %
+          points.length
       ];
 
-
-    // --------------------------------------------
-    // Wall line
-    // --------------------------------------------
-
-    ctx.beginPath();
-
-    ctx.moveTo(
-      a.pixelX,
-      a.pixelY
-    );
-
-    ctx.lineTo(
-      b.pixelX,
-      b.pixelY
-    );
-
-    ctx.strokeStyle =
-      '#00aaff';
-
-    ctx.lineWidth =
-      3;
-
-    ctx.stroke();
-
-
-    // --------------------------------------------
-    // Wall length
-    // --------------------------------------------
-
-    const dist =
-      Math.hypot(
-        b.meterX - a.meterX,
-        b.meterZ - a.meterZ
+    const wall =
+      networkWalls.find(
+        (w) =>
+          (
+            w.pointA === a &&
+            w.pointB === b
+          ) ||
+          (
+            w.pointA === b &&
+            w.pointB === a
+          )
       );
 
-
-    // --------------------------------------------
-    // Midpoint
-    // --------------------------------------------
-
-    const midX =
-      (a.pixelX + b.pixelX) / 2;
-
-    const midY =
-      (a.pixelY + b.pixelY) / 2;
-
-
-    // --------------------------------------------
-    // Label
-    // --------------------------------------------
-
-    const label =
-      `${dist.toFixed(2)}m`;
-
-    ctx.font =
-      'bold 16px sans-serif';
-
-    ctx.fillStyle =
-      '#00aaff';
-
-    ctx.strokeStyle =
-      '#000';
-
-    ctx.lineWidth =
-      3;
-
-    ctx.strokeText(
-      label,
-      midX + 6,
-      midY - 6
-    );
-
-    ctx.fillText(
-      label,
-      midX + 6,
-      midY - 6
-    );
-  }
-}
-
-
-// --------------------------------------------------
-// Debug trace information
-// --------------------------------------------------
-
-function logCurrentRoomGeometry() {
-
-  console.group(
-    '[TRACE DEBUG] Current Room Geometry'
-  );
-
-  console.log(
-    'Calibration points:',
-    calibrationPoints
-  );
-
-  console.log(
-    'Pixels per meter:',
-    pixelsPerMeter
-  );
-
-  console.log(
-    'Number of corners:',
-    corners.length
-  );
-
-  console.log(
-    'Corners:',
-    JSON.parse(
-      JSON.stringify(corners)
-    )
-  );
-
-  if (corners.length >= 2) {
-
-    const wallLengths =
-      [];
-
-    for (
-      let i = 0;
-      i < corners.length;
-      i++
-    ) {
-
-      const a =
-        corners[i];
-
-      const b =
-        corners[
-          (i + 1) %
-          corners.length
-        ];
-
-      const length =
-        Math.hypot(
-          b.meterX - a.meterX,
-          b.meterZ - a.meterZ
-        );
-
-      wallLengths.push({
-        wallIndex: i,
-        from: i,
-        to:
-          (i + 1) %
-          corners.length,
-        lengthMeters:
-          length,
-      });
+    if (wall) {
+      wallIds.push(
+        wall.id
+      );
+    } else {
+      openSegments.push(i);
     }
-
-    console.log(
-      'Wall lengths:',
-      wallLengths
-    );
   }
 
-  console.log(
-    'Room doors:',
-    JSON.parse(
-      JSON.stringify(roomDoors)
-    )
-  );
-
-  console.groupEnd();
-}
-
-
-// --------------------------------------------------
-// Commit current room
-// --------------------------------------------------
-
-export function commitCurrentRoom(
-  roomId,
-  roomLabel
-) {
-
-  if (corners.length < 3) {
-
-    return {
-      success: false,
-      reason:
-        'not_enough_corners',
-    };
-  }
-
-
   // ----------------------------------------------
-  // DEBUG:
-  // Log the geometry BEFORE it is cleared.
-  // ----------------------------------------------
-
-  logCurrentRoomGeometry();
-
-
-  // ----------------------------------------------
-  // Prevent duplicate room IDs
-  // ----------------------------------------------
-
-  const idTaken =
-    completedRooms.some(
-      (room) =>
-        room.room.id === roomId
-    );
-
-  if (idTaken) {
-
-    return {
-      success: false,
-      reason:
-        'duplicate_id',
-    };
-  }
-
-
-  // ----------------------------------------------
-  // Generate room data
-  // ----------------------------------------------
-
-  const data =
-    generateRoomDataInternal(
-      roomId,
-      roomLabel
-    );
-
-
-  // ----------------------------------------------
-  // Save completed room
+  // Commit room
   // ----------------------------------------------
 
   completedRooms.push({
-
-    ...data,
-
-    rawCorners: [
-      ...corners
-    ],
+    id: roomId,
+    label: roomLabel,
+    pointIds: points,
+    wallIds,
+    openSegments
   });
 
+  currentRoomPointIds = [];
 
-  // ----------------------------------------------
-  // Clear current room
-  // ----------------------------------------------
-
-  corners = [];
-  roomDoors = [];
-
-  // Reset door state
-  doorMode = false;
-  selectedWallIndex = null;
-  doorClickPoints = [];
-
-
-  // ----------------------------------------------
-  // Clean visual state
-  // ----------------------------------------------
-
-  redrawAllRooms();
-
+  redrawAll();
 
   return {
     success: true,
+    openSegments
   };
 }
 
+// ==================================================
+// Unified click dispatcher
+// ==================================================
 
-// --------------------------------------------------
-// Reset current room corners
-// --------------------------------------------------
+export function onCanvasClick(
+  pixelX,
+  pixelY,
+  callbacks = {}
+) {
+  const {
+    onCalibrationNeeded,
+    onNoPointNearby
+  } = callbacks;
 
-export function resetCurrentRoomCorners() {
+  if (
+    mode === 'calibrate'
+  ) {
+    handleCalibrationClick(
+      pixelX,
+      pixelY,
+      onCalibrationNeeded
+    );
 
-  corners = [];
-  roomDoors = [];
-
-  // Reset door state
-  doorMode = false;
-  selectedWallIndex = null;
-  doorClickPoints = [];
-
-  // IMPORTANT:
-  //
-  // If calibration has NOT been completed,
-  // clear any partial calibration clicks too.
-  //
-  // This prevents a leftover first calibration
-  // point from contaminating the next attempt.
-  //
-  // If calibration was already completed,
-  // preserve it so it can be reused for another room.
-
-  if (pixelsPerMeter === null) {
-    calibrationPoints = [];
+    return;
   }
 
-  redrawImage();
+  if (
+    pixelsPerMeter === null
+  ) {
+    return;
+  }
+
+  if (
+    mode === 'walls'
+  ) {
+    handleWallModeClick(
+      pixelX,
+      pixelY
+    );
+
+    return;
+  }
+
+  if (
+    mode === 'room'
+  ) {
+    handleRoomModeClick(
+      pixelX,
+      pixelY,
+      onNoPointNearby
+    );
+
+    return;
+  }
 }
 
-
-// --------------------------------------------------
-// Save all rooms for 3D preview
-// --------------------------------------------------
+// ==================================================
+// Output generation
+// ==================================================
 
 export function saveAllRoomsForPreview() {
+  localStorage.removeItem(
+    'unittwin_trace_preview'
+  );
 
-  const allWalls =
-    completedRooms.flatMap(
-      (room) =>
-        room.walls
+  const walls =
+    networkWalls.map(
+      (w) => {
+        const a =
+          getPoint(w.pointA);
+
+        const b =
+          getPoint(w.pointB);
+
+        return {
+          id: w.id,
+
+          start: {
+            x: parseFloat(
+              a.meterX.toFixed(3)
+            ),
+            z: parseFloat(
+              a.meterZ.toFixed(3)
+            )
+          },
+
+          end: {
+            x: parseFloat(
+              b.meterX.toFixed(3)
+            ),
+            z: parseFloat(
+              b.meterZ.toFixed(3)
+            )
+          }
+        };
+      }
     );
 
-  const allRooms =
+  const rooms =
     completedRooms.map(
-      (room) =>
-        room.room
+      (r) => ({
+        id: r.id,
+        label: r.label,
+        wallIds: r.wallIds,
+
+        corners:
+          r.pointIds.map(
+            (pid) => {
+              const p =
+                getPoint(pid);
+
+              return {
+                x: parseFloat(
+                  p.meterX.toFixed(3)
+                ),
+                z: parseFloat(
+                  p.meterZ.toFixed(3)
+                )
+              };
+            }
+          )
+      })
     );
-
-
-  const floorPlanShape = {
-
-    walls:
-      allWalls,
-
-    rooms:
-      allRooms,
-  };
-
 
   localStorage.setItem(
     'unittwin_trace_preview',
-    JSON.stringify(
-      floorPlanShape
-    )
+    JSON.stringify({
+      walls,
+      rooms
+    })
   );
 }
 
+// ==================================================
+// Full reset
+// ==================================================
 
-// --------------------------------------------------
-// Full recalibration / complete reset
-// --------------------------------------------------
-
-export function startRecalibration() {
-
+export function startOver() {
   calibrationPoints = [];
-
   pixelsPerMeter = null;
 
-  corners = [];
+  networkPoints = [];
+  networkWalls = [];
 
-  roomDoors = [];
+  nextPointId = 1;
+  nextWallId = 1;
+
+  currentChainPointId = null;
+  wallChainHistory = [];
 
   completedRooms = [];
+  currentRoomPointIds = [];
 
-  tracingActive = false;
-
-  // Reset door state
-  doorMode = false;
-  selectedWallIndex = null;
-  doorClickPoints = [];
+  mode = 'idle';
 
   redrawImage();
 }
 
+// ==================================================
+// Debug
+// ==================================================
 
-// --------------------------------------------------
-// Full trace reset
-// --------------------------------------------------
+export function debugDumpNetwork() {
+  console.log(
+    'POINTS:',
+    networkPoints.map(
+      (p) => ({
+        id: p.id,
+        meterX:
+          p.meterX.toFixed(2),
+        meterZ:
+          p.meterZ.toFixed(2)
+      })
+    )
+  );
 
-export function resetTrace() {
-  startRecalibration();
+  console.log(
+    'WALLS:',
+    networkWalls.map(
+      (w) => ({
+        id: w.id,
+        pointA: w.pointA,
+        pointB: w.pointB
+      })
+    )
+  );
+
+  console.log(
+    'CURRENT ROOM SELECTION:',
+    currentRoomPointIds
+  );
 }

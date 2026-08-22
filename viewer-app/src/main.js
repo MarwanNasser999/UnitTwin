@@ -128,36 +128,12 @@ const floorPlan = scaleFloorPlan(
  * Since floorPlan is already presentation-scaled,
  * the spawn point is automatically in the correct rendered space.
  */
-function calculateFloorPlanCenter(plan) {
-  const allCorners = plan.rooms.flatMap(
-    (r) => r.corners
-  );
-
-  if (allCorners.length === 0) {
-    return {
-      x: 0,
-      z: 0,
-    };
-  }
-
-  const xs = allCorners.map(
-    (c) => c.x
-  );
-
-  const zs = allCorners.map(
-    (c) => c.z
-  );
-
+function calculateRoomCenter(room) {
+  const xs = room.corners.map((c) => c.x);
+  const zs = room.corners.map((c) => c.z);
   return {
-    x:
-      (Math.min(...xs) +
-        Math.max(...xs)) /
-      2,
-
-    z:
-      (Math.min(...zs) +
-        Math.max(...zs)) /
-      2,
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    z: (Math.min(...zs) + Math.max(...zs)) / 2,
   };
 }
 
@@ -182,23 +158,9 @@ const camera = new THREE.PerspectiveCamera(
 );
 
 
-const spawnCenter =
-  calculateFloorPlanCenter(
-    floorPlan
-  );
-
-
-/*
- * Camera remains at real human eye height.
- *
- * X/Z use the presentation-scaled floor plan.
- * Y remains 1.6m.
- */
-camera.position.set(
-  spawnCenter.x,
-  1.6,
-  spawnCenter.z
-);
+const spawnCenter = calculateRoomCenter(floorPlan.rooms[0]);
+camera.position.set(spawnCenter.x, 1.6, spawnCenter.z);
+camera.lookAt(1.9, 0, 1.9);
 
 
 /*
@@ -280,11 +242,36 @@ const roomsGroup =
   buildFloorPlan(
     floorPlan
   );
-
+window.roomsGroup = roomsGroup;
 
 scene.add(
   roomsGroup
 );
+
+
+const debugRoom = roomsGroup.getObjectByName(floorPlan.rooms[0].id);
+if (debugRoom) {
+  const debugFloor = debugRoom.children.find((c) => c.name === 'floor');
+  if (debugFloor) {
+    const pos = debugFloor.geometry.attributes.position;
+    console.log('FLOOR VERTEX COUNT:', pos.count);
+    for (let i = 0; i < pos.count; i++) {
+      console.log(`  vertex ${i}:`, pos.getX(i), pos.getY(i), pos.getZ(i));
+    }
+    const worldBox = new THREE.Box3().setFromObject(debugFloor);
+    console.log('FLOOR WORLD BOUNDS:', worldBox.min, worldBox.max);
+  } else {
+    console.log('NO FLOOR MESH FOUND for room', floorPlan.rooms[0].id);
+  }
+}
+
+const debugWallsGroup = roomsGroup.getObjectByName('walls');
+console.log('WALL WORLD POSITIONS:');
+debugWallsGroup.traverse((child) => {
+  if (child.isMesh) {
+    console.log(`  ${child.name}:`, child.position.x.toFixed(2), child.position.z.toFixed(2));
+  }
+});
 
 
 /*
@@ -295,69 +282,8 @@ scene.add(
  * This stays exactly 1m × 1m × 1m.
  * It is intentionally NOT presentation-scaled.
  */
-const refCube =
-  new THREE.Mesh(
-    new THREE.BoxGeometry(
-      1,
-      1,
-      1
-    ),
-
-    new THREE.MeshBasicMaterial({
-      color: 0xff0000,
-    })
-  );
 
 
-refCube.position.set(
-  0.5,
-  0.5,
-  0.5
-);
-
-
-scene.add(
-  refCube
-);
-
-
-const floorMesh =
-  roomsGroup
-    .getObjectByName(
-      floorPlan.rooms[0].id
-    )
-    .children.find(
-      (c) =>
-        c.name === 'floor'
-    );
-
-
-const floorBox =
-  new THREE.Box3().setFromObject(
-    floorMesh
-  );
-
-
-const floorSize =
-  new THREE.Vector3();
-
-
-floorBox.getSize(
-  floorSize
-);
-
-
-console.log(
-  'ACTUAL FLOOR SIZE (world units):',
-  floorSize
-);
-
-
-console.log(
-  'ACTUAL FLOOR BOUNDS:',
-  floorBox.min,
-  floorBox.max
-);
 
 
 const wallsGroup =
