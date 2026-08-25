@@ -782,6 +782,16 @@ function findSelfIntersection(points) {
 // ==================================================
 // Commit room — floors and ceilings only. Doors live on walls.
 // ==================================================
+const COLLINEAR_TOLERANCE_M = 0.15;
+
+function projectOntoLine(point, segStart, segEnd, dx, dz, lengthSq) {
+  const t = ((point.x - segStart.x) * dx + (point.z - segStart.z) * dz) / lengthSq;
+  const projX = segStart.x + t * dx;
+  const projZ = segStart.z + t * dz;
+  const dist = Math.hypot(point.x - projX, point.z - projZ);
+  if (dist > COLLINEAR_TOLERANCE_M) return null;
+  return t;
+}
 
 export function commitCurrentRoom(roomId, roomLabel) {
   let points = currentRoomPointIds.slice();
@@ -805,16 +815,37 @@ export function commitCurrentRoom(roomId, roomLabel) {
 
   // Record which traced walls form this room's boundary, where one
   // exists. Purely informational — nothing is generated from it.
-  const wallIds = [];
+    const wallIds = [];
+
   for (let i = 0; i < points.length; i++) {
-    const aId = points[i];
-    const bId = points[(i + 1) % points.length];
+    const aPoint = getPoint(points[i]);
+    const bPoint = getPoint(points[(i + 1) % points.length]);
+    if (!aPoint || !bPoint) continue;
 
-    const wall = networkWalls.find(function (w) {
-      return (w.pointA === aId && w.pointB === bId) || (w.pointA === bId && w.pointB === aId);
-    });
+    const segStart = { x: aPoint.meterX, z: aPoint.meterZ };
+    const segEnd = { x: bPoint.meterX, z: bPoint.meterZ };
+    const dx = segEnd.x - segStart.x;
+    const dz = segEnd.z - segStart.z;
+    const lengthSq = dx * dx + dz * dz;
+    if (lengthSq === 0) continue;
 
-    if (wall && wallIds.indexOf(wall.id) === -1) wallIds.push(wall.id);
+    // Any wall lying along this boundary segment belongs to the room,
+    // however many pieces the segment was traced in.
+    for (const wall of networkWalls) {
+      const wa = getPoint(wall.pointA);
+      const wb = getPoint(wall.pointB);
+      if (!wa || !wb) continue;
+
+      const ta = projectOntoLine({ x: wa.meterX, z: wa.meterZ }, segStart, segEnd, dx, dz, lengthSq);
+      const tb = projectOntoLine({ x: wb.meterX, z: wb.meterZ }, segStart, segEnd, dx, dz, lengthSq);
+      if (ta === null || tb === null) continue;
+
+      const lo = Math.min(ta, tb);
+      const hi = Math.max(ta, tb);
+      if (hi < -0.02 || lo > 1.02) continue;
+
+      if (wallIds.indexOf(wall.id) === -1) wallIds.push(wall.id);
+    }
   }
 
   completedRooms.push({

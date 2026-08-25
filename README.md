@@ -50,29 +50,58 @@ viewer-app/
       ceiling generation, proper UV mapping for non-rectangular surfaces
 - [ ] Phase 4 — Floor plan input pipeline (in progress):
       - [x] V1 — Manual trace tool: image upload, calibration (with
-            verification/recalibration), corner tracing with order/angle
-            validation, multi-room support, duplicate-ID prevention,
-            direct "Preview in 3D" connection via localStorage
-      - [x] V2 — Doors/openings placement in the trace tool: click a wall
-            to select it, click two points along it to mark a door
-            (projected precisely onto the wall's line), converted to
-            offset/width and attached to the correct wall's `openings`
-            in the generated data. Integrated into the per-room flow
-            (corners → doors → verify → confirm), not a separate pass.
-      - [x] V3 — Multiple rooms with properly shared walls: solved via a
-            full redesign (shared wall-network model — trace walls once,
-            points snap/reuse automatically, rooms are defined by
-            selecting existing network points) rather than the original
-            per-room-trace-then-detect-duplicates approach, which
-            couldn't handle partial wall sharing. Includes: point
-            snapping, self-intersection validation, open-boundary support
-            (untraced segments = intentional doorways/openings, replacing
-            the separate "Mark Doors" feature entirely).
-      - [ ] V4 — Automated CAD/DXF/vector-PDF parsing; VLM-based parsing for
-            scanned/rasterized plans as a further stretch tier
-- [ ] Wall/floor/ceiling selection needs re-verification once V2/V3 (real
-      shared walls, multiple traced rooms) exist — flagged as not yet
-      tested against real multi-room traced data
+            verification/recalibration), corner tracing, multi-room
+            support, duplicate-ID prevention, direct "Preview in 3D"
+            connection via localStorage
+      - [x] V2 — Doors. Went through several designs before landing on
+            the right one: a door is an **opening on a specific wall**
+            (`{offset, width}` in metres along that wall), not a gap
+            inferred between walls. Mark Doors selects a wall, then two
+            clicks along it set the opening; both clicks project onto
+            that wall's own line, so the door is always exactly on the
+            wall regardless of click precision. `buildWall` splits the
+            wall around its openings — solid wall, door, solid wall —
+            all from one wall's coordinates. A shared wall is one wall,
+            so a shared doorway is one opening: no duplicates, no
+            proximity matching, no filler geometry. The door itself is
+            procedural (frame posts, lintel, panel on a hinge-ready
+            pivot, handles both sides) and scales to its opening.
+      - [x] V3 — Shared wall network + reliable tracing:
+            - Walls are traced once into a shared point/wall network;
+              rooms are defined by selecting existing points, so shared
+              walls are structurally impossible to duplicate
+            - **Ortho snap** (segments within 8° of horizontal/vertical
+              snap to exact) and **coordinate snap** (a new point's X/Y
+              snaps onto an existing point's X/Y) — clicks are never
+              pixel-perfect, and without these walls lean by a few
+              centimetres and corners drift apart. Shift bypasses both
+              for genuinely angled walls.
+            - **Live preview**: green line from the last point to the
+              cursor with its length, showing the snapped result before
+              committing
+            - **T-junctions**: clicking an existing wall's line splits
+              it and inserts a point there. The split is checked at the
+              raw click, *before* snapping, since snapping would
+              otherwise nudge the click off the wall it was aimed at.
+            - Self-intersection validation on room definition
+            - Room boundaries collect every wall lying along each
+              segment, so a side traced in several pieces still selects
+              and paints correctly
+      - [ ] V4 — Windows (next). Pick a window from the panel, move it
+            over the scene with live validity feedback — green where it
+            can go, red on floor, ceiling, or a wall with no room for
+            it — and left-click to place. Cuts a real partial-height
+            hole: solid wall above and below, unlike doors, which are
+            full-height. Opens and closes on E, same as doors.
+            Requires vertical splitting in `createWallSegment`, which
+            currently splits a wall along its length only. That same
+            capability is what lets a short door have wall built above
+            it later, so it's worth building properly once.
+      - [ ] V5 — Automated CAD/DXF/vector-PDF parsing; VLM-based
+            parsing for scanned/rasterised plans as a further stretch
+            tier. Phase 4 closes once this ships.
+- [x] Wall/floor/ceiling selection verified against real multi-room
+      traced data, including walls traced in multiple pieces
 - [ ] Phase 5 — Multi-unit / developer dashboard
 - [ ] Phase 6 — Sales tool features: lead capture, analytics, buyer
       preference prediction (real applied ML on behavioral data)
@@ -98,11 +127,20 @@ viewer-app/
       analytics). Enforcement depends on Phase 5 existing; the structure
       itself does not.
 - [ ] **Visual quality overhaul (required before this is a sellable
-      product)** — current furniture/materials prove the mechanism, not
-      the final look. Needs: high-quality furniture assets with real
-      materials/detail (not free low-poly packs), improved lighting/shadows,
-      and overall photorealism — explicitly deferred until V1-V4 are done,
-      but not optional long-term.
+      product).** Everything currently in the scene is a placeholder
+      that proves the mechanism, not the finished look:
+      - Doors are procedural boxes. The real product ships a library of
+        real door models the user picks from, with the frame sizing
+        itself to the chosen door — and if a door is shorter than the
+        opening, wall is built above it rather than the door stretching
+        to fit.
+      - Furniture is a handful of models. The real catalogue is large.
+      - Materials, lighting and shadows are flat. Target is
+        photorealistic, since a buyer deciding on an unbuilt flat is
+        judging how it *looks*, not whether the geometry is correct.
+      - The default building itself should read as real, not as a
+        diagram.
+
 - [ ] **Product app frontend (the real entry point users see)** — right
       now there is no actual product: `index.html` and `trace.html` are
       bare, unstyled, developer-only pages with no navigation, accounts,
@@ -139,6 +177,28 @@ viewer-app/
 
 ## Design Decisions Worth Knowing
 
+- **Corner extension.** Every wall extends half a wall-thickness past
+  each end. Two walls meeting at a shared corner point each *stop* at
+  that point, which leaves the corner square unfilled — a notch inside,
+  a seam outside, on every corner of every room. Extending closes it.
+  The overlap it creates is handled with `polygonOffset` on wall
+  materials; a proper mitre is deferred to the visual-quality pass.
+
+- **Z-fighting is the recurring 3D failure mode here.** Any two
+  surfaces at the same position flicker as the camera moves, and it
+  cost real time before being recognised. Frame depth is inset below
+  wall thickness, and wall segments stop short of an opening by exactly
+  the frame thickness so the posts *fill* that space rather than
+  sitting in front of it. Surfaces meeting end-to-end are fine;
+  surfaces meeting face-to-face are not.
+
+- **Doors belong to walls, not to rooms.** Every earlier design tried
+  to infer a door's position from gaps, room boundaries, or proximity,
+  and each one produced doors that landed in empty space or at the
+  wrong width. Anchoring the door to a wall removed four layers of
+  inference and most of the bug surface with them.
+
+
 - **Presentation scale (1.1x) + FOV=90.** First-person 3D on a flat monitor
   lacks real peripheral vision and depth cues, so mathematically accurate
   rooms can feel smaller/more cramped than they really are — a known,
@@ -169,16 +229,18 @@ viewer-app/
 
 ## Known Limitations (tracked, not forgotten)
 
-- No wall collision for the *player* was an early gap — now fixed
-  (raycasting-based, with sliding).
-- Flat colors + real textures both work; textures only tested on
-  rectangular/simple shapes so far — arbitrary shape UV mapping is built
-  but not stress-tested on complex traced geometry yet.
-- Furniture catalog is small (4 items) with free/placeholder-quality
-  models — real asset quality is part of the future visual overhaul.
-- Trace tool assumes axis-aligned (horizontal/vertical) walls — angled
-  walls will trigger a (skippable) warning, not a hard block.
-- Trace tool's shared-wall handling between rooms is not yet built (V3).
+- Flat colours and real textures both work; arbitrary-shape UV mapping
+  is built but not stress-tested on complex traced geometry.
+- Furniture catalogue is small (4 items) with placeholder-quality
+  models — see the visual quality overhaul.
+- Wall corners overlap by half a thickness (see corner extension in
+  Design Decisions). `polygonOffset` keeps it stable; a real mitre is
+  deferred to the visual pass.
+- Doors are full-height openings. Partial-height openings — the thing
+  windows need — don't exist yet; that's V5.
+- No collision on doors: you can walk through a closed one.
+- Wall thickness is a single global constant; real plans have varying
+  thicknesses (exterior vs. partition).
 
 ## Tech Stack
 

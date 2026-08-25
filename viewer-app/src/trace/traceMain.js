@@ -317,6 +317,7 @@ preview3dBtn.addEventListener('click', () => {
   exitDoorMarkMode();
   exitRoomMode();
   setStage('ready');
+  
 
   saveAllRoomsForPreview();
   window.open(`/index.html?t=${Date.now()}`, '_blank');

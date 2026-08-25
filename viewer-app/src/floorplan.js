@@ -19,7 +19,12 @@ function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
 
   const geometry = new THREE.BoxGeometry(segLength, WALL_HEIGHT, WALL_THICKNESS);
 
-  const sharedMaterial = new THREE.MeshStandardMaterial({ color: 0xd8d8d0 });
+    const sharedMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8d8d0,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
   const materials = [
     sharedMaterial,
     sharedMaterial,
@@ -55,7 +60,7 @@ function createDoorForOpening(start, ux, uz, angle, fromDist, toDist) {
   const midDist = (fromDist + toDist) / 2;
 
   // The frame straddles the opening's edges.
-    const frameSpan = openingWidth;
+    const frameSpan = openingWidth - 0.02;
   const panelWidth = openingWidth - FRAME_THICKNESS * 2;
   const panelHeight = WALL_HEIGHT - FRAME_THICKNESS;
 
@@ -155,13 +160,13 @@ function buildWall(wallData) {
     const openStart = opening.offset;
     const openEnd = opening.offset + opening.width;
 
-    if (openStart > cursor) {
-      group.add(createWallSegment(start, ux, uz, angle, cursor, openStart, id));
+        if (openStart - FRAME_THICKNESS > cursor) {
+      group.add(createWallSegment(start, ux, uz, angle, cursor, openStart - FRAME_THICKNESS, id));
     }
 
     group.add(createDoorForOpening(start, ux, uz, angle, openStart, openEnd));
 
-    cursor = openEnd;
+    cursor = openEnd + FRAME_THICKNESS;
     isFirstSegment = false;
   }
 
