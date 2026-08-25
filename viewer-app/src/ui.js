@@ -1,4 +1,3 @@
-import { floorPlan } from './floorplanData.js';
 import { finishes } from './materialsData.js';
 import { furnitureCatalog, placedFurniture, addFurnitureInstance } from './furnitureData.js';
 import {
@@ -10,11 +9,8 @@ import {
   applyCeilingTexture,
 } from './floorplan.js';
 
-let selectedRoomId = floorPlan.rooms[0].id;
-let selectedWallId = null;
-let selectedFurnitureId = null;
-let panelMode = null;
-
+// The real, active floor plan is passed in from main.js.
+let floorPlan = null;
 let panelEl = null;
 let roomsGroupRef = null;
 let onFurnitureChanged = null;
@@ -22,7 +18,17 @@ let getSpawnPointCallback = null;
 let exitEditModeCallback = null;
 let setDragModeCallback = null;
 
-export function buildUI(roomsGroup, furnitureChangeCallback, getSpawnPoint, exitEditMode, setDragMode) {
+export function buildUI(
+  activeFloorPlan,
+  roomsGroup,
+  furnitureChangeCallback,
+  getSpawnPoint,
+  exitEditMode,
+  setDragMode
+) {
+  floorPlan = activeFloorPlan;
+  selectedRoomId = floorPlan.rooms[0]?.id || null;
+
   const panel = document.createElement('div');
   panel.id = 'ui-panel';
   document.body.appendChild(panel);
@@ -44,14 +50,24 @@ export function togglePanel() {
 
 function showPanel() {
   if (panelEl) panelEl.classList.add('visible');
-}
+} 
 
-export function selectWallFromScene(wallId) {
+let selectedRoomId = null;
+let selectedWallId = null;
+let selectedFaceIndex = 4; // add this line — default to one main side
+let selectedFurnitureId = null;
+let panelMode = null;
+
+
+export function selectWallFromScene(wallId, faceIndex) {
   const owningRoom = floorPlan.rooms.find((r) => r.wallIds.includes(wallId));
   if (!owningRoom) return;
 
   selectedRoomId = owningRoom.id;
   selectedWallId = wallId;
+  // Only faces 4/5 (the two main sides) get per-side treatment; any
+  // other face (top/bottom/end) falls back to face 4 as a sane default.
+  selectedFaceIndex = (faceIndex === 4 || faceIndex === 5) ? faceIndex : 4;
   panelMode = 'wall';
 
   renderPanel(panelEl, roomsGroupRef);
@@ -101,21 +117,30 @@ function renderWallPanel(panel, roomsGroup) {
   panel.appendChild(roomLabel);
 
   const roomSelect = document.createElement('select');
+
   for (const room of floorPlan.rooms) {
     const option = document.createElement('option');
     option.value = room.id;
     option.textContent = room.label;
-    if (room.id === selectedRoomId) option.selected = true;
+
+    if (room.id === selectedRoomId) {
+      option.selected = true;
+    }
+
     roomSelect.appendChild(option);
   }
+
   roomSelect.addEventListener('change', (e) => {
     selectedRoomId = e.target.value;
     selectedWallId = null;
     renderPanel(panel, roomsGroup);
   });
+
   panel.appendChild(roomSelect);
 
-  const currentRoom = floorPlan.rooms.find((r) => r.id === selectedRoomId);
+  const currentRoom = floorPlan.rooms.find(
+    (r) => r.id === selectedRoomId
+  );
 
   const wallLabel = document.createElement('div');
   wallLabel.textContent = 'Wall';
@@ -124,28 +149,38 @@ function renderWallPanel(panel, roomsGroup) {
 
   const wallButtons = document.createElement('div');
   wallButtons.className = 'ui-button-row';
+
   for (const wallId of currentRoom.wallIds) {
     const wallData = floorPlan.walls.find((w) => w.id === wallId);
+
     const btn = document.createElement('button');
     btn.textContent = wallData.label;
-    btn.className = wallId === selectedWallId ? 'ui-btn selected' : 'ui-btn';
+    btn.className =
+      wallId === selectedWallId ? 'ui-btn selected' : 'ui-btn';
+
     btn.addEventListener('click', () => {
       selectedWallId = wallId;
       renderPanel(panel, roomsGroup);
     });
+
     wallButtons.appendChild(btn);
   }
+
   panel.appendChild(wallButtons);
 
   const wallColorLabel = document.createElement('div');
   wallColorLabel.textContent = selectedWallId
-    ? `Wall Finish — ${floorPlan.walls.find((w) => w.id === selectedWallId).label}`
+    ? `Wall Finish — ${
+        floorPlan.walls.find((w) => w.id === selectedWallId).label
+      }`
     : 'Select a wall above (or click one in the scene) to change its finish';
+
   wallColorLabel.className = 'ui-section-label';
   panel.appendChild(wallColorLabel);
 
   const wallSwatches = document.createElement('div');
   wallSwatches.className = 'ui-button-row';
+
   for (const finish of finishes.wall) {
     const swatch = document.createElement('button');
     swatch.className = 'ui-swatch';
@@ -156,18 +191,22 @@ function renderWallPanel(panel, roomsGroup) {
       swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
       swatch.style.backgroundSize = 'cover';
     } else {
-      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+      swatch.style.backgroundColor = `#${finish.color
+        .toString(16)
+        .padStart(6, '0')}`;
     }
 
     swatch.addEventListener('click', () => {
-      if (finish.textureFolder) {
-        applyWallTexture(roomsGroup, selectedWallId, finish.textureFolder);
-      } else {
-        applyWallColor(roomsGroup, selectedWallId, finish.color);
-      }
-    });
+  if (finish.textureFolder) {
+    applyWallTexture(roomsGroup, selectedWallId, finish.textureFolder, selectedFaceIndex);
+  } else {
+    applyWallColor(roomsGroup, selectedWallId, finish.color, selectedFaceIndex);
+  }
+});
+
     wallSwatches.appendChild(swatch);
   }
+
   panel.appendChild(wallSwatches);
 
   const floorColorLabel = document.createElement('div');
@@ -177,6 +216,7 @@ function renderWallPanel(panel, roomsGroup) {
 
   const floorSwatches = document.createElement('div');
   floorSwatches.className = 'ui-button-row';
+
   for (const finish of finishes.floor) {
     const swatch = document.createElement('button');
     swatch.className = 'ui-swatch';
@@ -186,18 +226,30 @@ function renderWallPanel(panel, roomsGroup) {
       swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
       swatch.style.backgroundSize = 'cover';
     } else {
-      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+      swatch.style.backgroundColor = `#${finish.color
+        .toString(16)
+        .padStart(6, '0')}`;
     }
 
     swatch.addEventListener('click', () => {
       if (finish.textureFolder) {
-        applyFloorTexture(roomsGroup, selectedRoomId, finish.textureFolder);
+        applyFloorTexture(
+          roomsGroup,
+          selectedRoomId,
+          finish.textureFolder
+        );
       } else {
-        applyFloorColor(roomsGroup, selectedRoomId, finish.color);
+        applyFloorColor(
+          roomsGroup,
+          selectedRoomId,
+          finish.color
+        );
       }
     });
+
     floorSwatches.appendChild(swatch);
   }
+
   panel.appendChild(floorSwatches);
 
   const ceilingColorLabel = document.createElement('div');
@@ -207,6 +259,7 @@ function renderWallPanel(panel, roomsGroup) {
 
   const ceilingSwatches = document.createElement('div');
   ceilingSwatches.className = 'ui-button-row';
+
   for (const finish of finishes.floor) {
     const swatch = document.createElement('button');
     swatch.className = 'ui-swatch';
@@ -216,18 +269,30 @@ function renderWallPanel(panel, roomsGroup) {
       swatch.style.backgroundImage = `url(/textures/${finish.textureFolder}/color.jpg)`;
       swatch.style.backgroundSize = 'cover';
     } else {
-      swatch.style.backgroundColor = `#${finish.color.toString(16).padStart(6, '0')}`;
+      swatch.style.backgroundColor = `#${finish.color
+        .toString(16)
+        .padStart(6, '0')}`;
     }
 
     swatch.addEventListener('click', () => {
       if (finish.textureFolder) {
-        applyCeilingTexture(roomsGroup, selectedRoomId, finish.textureFolder);
+        applyCeilingTexture(
+          roomsGroup,
+          selectedRoomId,
+          finish.textureFolder
+        );
       } else {
-        applyCeilingColor(roomsGroup, selectedRoomId, finish.color);
+        applyCeilingColor(
+          roomsGroup,
+          selectedRoomId,
+          finish.color
+        );
       }
     });
+
     ceilingSwatches.appendChild(swatch);
   }
+
   panel.appendChild(ceilingSwatches);
 
   const addLabel = document.createElement('div');
@@ -237,30 +302,46 @@ function renderWallPanel(panel, roomsGroup) {
 
   const addButtons = document.createElement('div');
   addButtons.className = 'ui-button-row';
+
   for (const item of furnitureCatalog) {
     const btn = document.createElement('button');
     btn.textContent = item.label;
     btn.className = 'ui-btn';
+
     btn.addEventListener('click', () => {
       const spawnPoint = getSpawnPointCallback(item);
-      addFurnitureInstance(item.id, selectedRoomId, spawnPoint);
 
-      if (onFurnitureChanged) onFurnitureChanged();
+      addFurnitureInstance(
+        item.id,
+        selectedRoomId,
+        spawnPoint
+      );
+
+      if (onFurnitureChanged) {
+        onFurnitureChanged();
+      }
     });
+
     addButtons.appendChild(btn);
   }
+
   panel.appendChild(addButtons);
 }
 
 function renderFurniturePanel(panel) {
-  const instance = placedFurniture.find((f) => f.instanceId === selectedFurnitureId);
+  const instance = placedFurniture.find(
+    (f) => f.instanceId === selectedFurnitureId
+  );
+
   if (!instance) {
     panelMode = null;
     renderPanel(panel, roomsGroupRef);
     return;
   }
 
-  const catalogItem = furnitureCatalog.find((c) => c.id === instance.catalogId);
+  const catalogItem = furnitureCatalog.find(
+    (c) => c.id === instance.catalogId
+  );
 
   const label = document.createElement('div');
   label.textContent = `Selected: ${catalogItem.label}`;
@@ -268,7 +349,8 @@ function renderFurniturePanel(panel) {
   panel.appendChild(label);
 
   const hint = document.createElement('div');
-  hint.textContent = 'Move: drag the object. Rotate: use the ring. Press R to switch.';
+  hint.textContent =
+    'Move: drag the object. Rotate: use the ring. Press R to switch.';
   hint.style.opacity = '0.7';
   hint.style.fontSize = '12px';
   panel.appendChild(hint);
@@ -280,17 +362,25 @@ function renderFurniturePanel(panel) {
   const moveModeBtn = document.createElement('button');
   moveModeBtn.textContent = 'Move';
   moveModeBtn.className = 'ui-btn';
+
   moveModeBtn.addEventListener('click', () => {
-    if (setDragModeCallback) setDragModeCallback('move');
+    if (setDragModeCallback) {
+      setDragModeCallback('move');
+    }
   });
+
   modeRow.appendChild(moveModeBtn);
 
   const rotateModeBtn = document.createElement('button');
   rotateModeBtn.textContent = 'Rotate';
   rotateModeBtn.className = 'ui-btn';
+
   rotateModeBtn.addEventListener('click', () => {
-    if (setDragModeCallback) setDragModeCallback('rotate');
+    if (setDragModeCallback) {
+      setDragModeCallback('rotate');
+    }
   });
+
   modeRow.appendChild(rotateModeBtn);
 
   panel.appendChild(modeRow);
@@ -299,30 +389,46 @@ function renderFurniturePanel(panel) {
   doneBtn.textContent = 'Done Editing';
   doneBtn.className = 'ui-btn';
   doneBtn.style.marginTop = '10px';
+
   doneBtn.addEventListener('click', () => {
-    if (exitEditModeCallback) exitEditModeCallback();
+    if (exitEditModeCallback) {
+      exitEditModeCallback();
+    }
 
     deselectAll();
     panelMode = null;
     renderPanel(panelEl, roomsGroupRef);
   });
+
   panel.appendChild(doneBtn);
 
   const deleteBtn = document.createElement('button');
   deleteBtn.textContent = 'Delete';
   deleteBtn.className = 'ui-btn';
   deleteBtn.style.marginTop = '6px';
-  deleteBtn.addEventListener('click', () => {
-    if (exitEditModeCallback) exitEditModeCallback();
 
-    const index = placedFurniture.findIndex((f) => f.instanceId === selectedFurnitureId);
-    if (index !== -1) placedFurniture.splice(index, 1);
+  deleteBtn.addEventListener('click', () => {
+    if (exitEditModeCallback) {
+      exitEditModeCallback();
+    }
+
+    const index = placedFurniture.findIndex(
+      (f) => f.instanceId === selectedFurnitureId
+    );
+
+    if (index !== -1) {
+      placedFurniture.splice(index, 1);
+    }
 
     selectedFurnitureId = null;
     panelMode = null;
 
-    if (onFurnitureChanged) onFurnitureChanged();
+    if (onFurnitureChanged) {
+      onFurnitureChanged();
+    }
+
     renderPanel(panel, roomsGroupRef);
   });
+
   panel.appendChild(deleteBtn);
 }
