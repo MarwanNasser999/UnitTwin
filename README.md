@@ -87,16 +87,34 @@ viewer-app/
             - Room boundaries collect every wall lying along each
               segment, so a side traced in several pieces still selects
               and paints correctly
-      - [ ] V4 — Windows (next). Pick a window from the panel, move it
-            over the scene with live validity feedback — green where it
-            can go, red on floor, ceiling, or a wall with no room for
-            it — and left-click to place. Cuts a real partial-height
-            hole: solid wall above and below, unlike doors, which are
-            full-height. Opens and closes on E, same as doors.
-            Requires vertical splitting in `createWallSegment`, which
-            currently splits a wall along its length only. That same
-            capability is what lets a short door have wall built above
-            it later, so it's worth building properly once.
+            - Calibration behaves like wall tracing: a live rubber-band
+              line, and the second point snapping square to the first
+              (Shift to override), since CAD dimension lines are
+              horizontal or vertical
+            - Marking a door takes a third click for the side it swings
+              into. Two arrows are drawn perpendicular to the wall —
+              the only directions a door on that wall can open — and a
+              click too near the wall line is refused as ambiguous
+            - Cancel Room; committing a room returns to the ready stage
+              instead of forcing wall-tracing mode
+      - [x] V4 — Windows. Picked from the panel and placed in the
+            viewer: the pointer unlocks, a ghost follows the mouse and
+            reads green where it fits, red over a door, another window,
+            or too near a corner. Placement writes `{offset, width,
+            sillHeight, headHeight, interiorSide}` onto the wall and
+            rebuilds just that wall.
+            - `createWallSegment` gained a height range, so a wall can
+              be cut partway up — solid below the sill and above the
+              head. Doors are still full-height; this is the same
+              capability a short door will need to have wall built
+              above it.
+            - Whichever side of the wall you stand on when placing is
+              recorded as the interior, and E only opens the window
+              from that side.
+            - Making the viewer place windows made it an editor rather
+              than a pure reader. Placements live in memory only —
+              persisting them means the viewer writing back to the
+              saved plan, which is really a backend question.
       - [ ] V5 — Automated CAD/DXF/vector-PDF parsing; VLM-based
             parsing for scanned/rasterised plans as a further stretch
             tier. Phase 4 closes once this ships.
@@ -140,6 +158,26 @@ viewer-app/
         judging how it *looks*, not whether the geometry is correct.
       - The default building itself should read as real, not as a
         diagram.
+      - **Mitred wall geometry (the corner problem).** Walls are
+        currently one box per wall, centred on its centreline. Two
+        perpendicular boxes necessarily intersect inside the corner
+        square — that overlap is what a corner *is* under this model —
+        so their faces pass through each other and flicker, and from
+        outside you can see interior paint through the seam. No offset,
+        depth bias or ownership rule removes it; several were tried.
+        The fix is to stop building walls as independent boxes and
+        generate the whole wall network as a single offset outline with
+        mitred joins, extruded to wall height. It has to cover the
+        entire network rather than per room, or two rooms sharing a
+        wall each extrude their own slab — the duplication the wall
+        network exists to prevent. Deferred here rather than done
+        earlier because doors, windows and per-side painting all have
+        to be reworked on top of it, and doing that against geometry
+        that this phase rebuilds anyway would mean doing it twice.
+      - Per-side wall painting must survive the rewrite. It works today
+        because each wall box carries separate materials per face; a
+        single extruded mesh needs vertex groups or split faces to keep
+        it.
 
 - [ ] **Product app frontend (the real entry point users see)** — right
       now there is no actual product: `index.html` and `trace.html` are
@@ -233,12 +271,20 @@ viewer-app/
   is built but not stress-tested on complex traced geometry.
 - Furniture catalogue is small (4 items) with placeholder-quality
   models — see the visual quality overhaul.
-- Wall corners overlap by half a thickness (see corner extension in
-  Design Decisions). `polygonOffset` keeps it stable; a real mitre is
-  deferred to the visual pass.
-- Doors are full-height openings. Partial-height openings — the thing
-  windows need — don't exist yet; that's V5.
-- No collision on doors: you can walk through a closed one.
+- Wall corners overlap where two perpendicular wall boxes intersect.
+  Visible as a flickering seam, and interior paint shows through from
+  outside. Each corner is owned by exactly one wall so only one
+  extends into it, which removed the worst of it, but the thickness
+  overlap itself is inherent to boxes-on-centrelines and needs the
+  mitred rewrite scheduled in the visual quality overhaul.
+- No collision on doors or windows: you can walk through a closed one.
+- Furniture rotates freely and pushes itself clear of walls when a turn
+  would collide. It works, but the honest fix is proper placement
+  behaviour in the visual pass.
+- Window placements live in memory only. Reloading loses them, since
+  the trace tool owns the saved plan and rewrites it wholesale.
+- Calibration accuracy is unverified — reported as slightly off away
+  from the calibrated distance, not yet measured.
 - Wall thickness is a single global constant; real plans have varying
   thicknesses (exterior vs. partition).
 

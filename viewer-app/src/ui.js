@@ -17,6 +17,8 @@ let onFurnitureChanged = null;
 let getSpawnPointCallback = null;
 let exitEditModeCallback = null;
 let setDragModeCallback = null;
+let setWindowPlacementCallback = null;
+let windowPlacing = false;
 
 export function buildUI(
   activeFloorPlan,
@@ -24,7 +26,8 @@ export function buildUI(
   furnitureChangeCallback,
   getSpawnPoint,
   exitEditMode,
-  setDragMode
+  setDragMode,
+  setWindowPlacement
 ) {
   floorPlan = activeFloorPlan;
   selectedRoomId = floorPlan.rooms[0]?.id || null;
@@ -39,6 +42,7 @@ export function buildUI(
   getSpawnPointCallback = getSpawnPoint;
   exitEditModeCallback = exitEditMode;
   setDragModeCallback = setDragMode;
+  setWindowPlacementCallback = setWindowPlacement;
 
   renderPanel(panel, roomsGroup);
 }
@@ -311,6 +315,13 @@ function renderWallPanel(panel, roomsGroup) {
     btn.addEventListener('click', () => {
       const spawnPoint = getSpawnPointCallback(item);
 
+      // null means nothing within reach is clear — better to say so
+      // than to drop the item through a wall.
+      if (!spawnPoint) {
+        alert('No clear space for that here — move somewhere with more room.');
+        return;
+      }
+
       addFurnitureInstance(
         item.id,
         selectedRoomId,
@@ -326,6 +337,36 @@ function renderWallPanel(panel, roomsGroup) {
   }
 
   panel.appendChild(addButtons);
+
+  const windowLabel = document.createElement('div');
+  windowLabel.textContent = 'Add Window';
+  windowLabel.className = 'ui-section-label';
+  panel.appendChild(windowLabel);
+
+  const windowRow = document.createElement('div');
+  windowRow.className = 'ui-button-row';
+
+  const windowBtn = document.createElement('button');
+  windowBtn.textContent = windowPlacing ? 'Cancel (Esc)' : 'Place Window';
+  windowBtn.className = 'ui-btn';
+
+  windowBtn.addEventListener('click', () => {
+    windowPlacing = !windowPlacing;
+    if (setWindowPlacementCallback) setWindowPlacementCallback(windowPlacing);
+    renderPanel(panel, roomsGroupRef);
+  });
+
+  windowRow.appendChild(windowBtn);
+  panel.appendChild(windowRow);
+}
+
+/**
+ * Called from main.js when placement is cancelled outside the panel
+ * (Escape), so the button label stays truthful.
+ */
+export function setWindowPlacingState(active) {
+  windowPlacing = active;
+  if (panelEl && panelMode === null) renderPanel(panelEl, roomsGroupRef);
 }
 
 function renderFurniturePanel(panel) {

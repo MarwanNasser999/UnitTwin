@@ -18,20 +18,9 @@ export function loadFurnitureModel(modelFolder, targetDimensions, onLoad, onErro
   (gltf) => {
     const rawModel = gltf.scene;
 
-    // This specific door model bundles a frame/doorway mesh alongside
-    // the actual door leaf — we only want the door itself for sizing
-    // and rendering, not the surrounding frame (our wall already has
-    // its own opening).
-    const doorPart = rawModel.getObjectByName('Door002') || rawModel;
-
-    const rawBox = new THREE.Box3().setFromObject(doorPart);
-    const rawSize = new THREE.Vector3();
-    rawBox.getSize(rawSize);
-    console.log(`Raw model size for ${modelFolder}:`, rawSize, 'target:', targetDimensions);
-
     const wrapper = new THREE.Group();
-    normalizeModelSize(doorPart, targetDimensions);
-    wrapper.add(doorPart);
+    normalizeModelSize(rawModel, targetDimensions);
+    wrapper.add(rawModel);
 
     cache[url] = wrapper;
     onLoad(SkeletonUtils.clone(wrapper));

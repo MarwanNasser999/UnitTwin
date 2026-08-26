@@ -3,7 +3,7 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-import { buildFloorPlan, getWallOBB } from './floorplan.js';
+import { buildFloorPlan, rebuildWall, getWallOBB } from './floorplan.js';
 import { floorPlan as defaultFloorPlan } from './floorplanData.js';
 import { buildFurnitureLayer, getFurnitureOBB } from './furniture.js';
 import { placedFurniture, furnitureCatalog } from './furnitureData.js';
@@ -17,6 +17,7 @@ import {
   getSelectedFurnitureId,
   deselectAll,
   togglePanel,
+  setWindowPlacingState,
 } from './ui.js';
 
 import { PRESENTATION_SCALE } from './config.js';
@@ -44,6 +45,14 @@ function scaleFloorPlan(plan, scale) {
       end: { x: w.end.x * scale, z: w.end.z * scale },
       openings: w.openings
         ? w.openings.map((o) => ({ ...o, offset: o.offset * scale, width: o.width * scale }))
+        : undefined,
+      windows: w.windows
+        ? w.windows.map((n) => ({
+            offset: n.offset * scale,
+            width: n.width * scale,
+            sillHeight: n.sillHeight * scale,
+            headHeight: n.headHeight * scale,
+          }))
         : undefined,
     })),
     rooms: plan.rooms.map((r) => ({
@@ -97,18 +106,23 @@ window.roomsGroup = roomsGroup;
 // Door pivots: collected once after the scene is built, used for
 // proximity checks (E to open/close) and the swing animation.
 // --------------------------------------------------
-const doorPivots = [];
-roomsGroup.traverse((child) => {
-  if (child.name === 'door_pivot') {
-    doorPivots.push({
-      pivot: child,
-      worldPosition: new THREE.Vector3(),
-      isOpen: false,
-      targetRotation: 0,
-    });
-  }
-});
-doorPivots.forEach((d) => d.pivot.getWorldPosition(d.worldPosition));
+let doorPivots = [];
+
+function refreshOpenablePivots() {
+  doorPivots = [];
+  roomsGroup.traverse((child) => {
+    if (child.name === 'door_pivot' || child.name === 'window_pivot') {
+      doorPivots.push({
+        pivot: child,
+        worldPosition: new THREE.Vector3(),
+        isOpen: false,
+        targetRotation: 0,
+      });
+    }
+  });
+  doorPivots.forEach((d) => d.pivot.getWorldPosition(d.worldPosition));
+}
+refreshOpenablePivots();
 
 const wallsGroup = roomsGroup.getObjectByName('walls');
 
@@ -147,8 +161,42 @@ function updateGizmoVisibility() {
   }
 }
 
+let rotationBeforeDrag = null;
+
 transformControls.addEventListener('dragging-changed', (event) => {
   orbitControls.enabled = !event.value;
+
+  const selectedId = getSelectedFurnitureId();
+  const instance = placedFurniture.find((f) => f.instanceId === selectedId);
+  const mesh = transformControls.object;
+
+  if (event.value) {
+    // Drag starting — remember an angle known to be valid.
+    rotationBeforeDrag = instance ? instance.rotationY : null;
+    return;
+  }
+
+  // Drag finished. Checking during the drag fights the gizmo, so the
+  // turn is free and only the final angle has to fit.
+  if (!instance || !mesh || rotationBeforeDrag === null) return;
+
+  const catalogItem = furnitureCatalog.find((c) => c.id === instance.catalogId);
+  if (!catalogItem) return;
+
+  const blocked = wouldCollide(
+    instance.position.x,
+    instance.position.z,
+    instance.rotationY,
+    catalogItem,
+    instance.instanceId
+  );
+
+  if (blocked) {
+    instance.rotationY = rotationBeforeDrag;
+    mesh.rotation.y = rotationBeforeDrag;
+  }
+
+  rotationBeforeDrag = null;
 });
 
 transformControls.addEventListener('objectChange', () => {
@@ -194,21 +242,38 @@ function findValidSpawnPoint(catalogItem) {
   const baseX = camera.position.x + forward.x * 1.5;
   const baseZ = camera.position.z + forward.z * 1.5;
 
-  const OFFSETS = [
-    { x: 0, z: 0 },
-    { x: 0.6, z: 0 }, { x: -0.6, z: 0 }, { x: 0, z: 0.6 }, { x: 0, z: -0.6 },
-    { x: 0.6, z: 0.6 }, { x: -0.6, z: 0.6 }, { x: 0.6, z: -0.6 }, { x: -0.6, z: -0.6 },
-  ];
+  // Rings outward from the aimed point. Standing in a corner blocks
+  // everything close in, so the search has to reach past one ring.
+  const RINGS = [0, 0.6, 1.2, 1.8];
+  const DIRECTIONS = 12;
 
-  for (const offset of OFFSETS) {
-    const testX = baseX + offset.x;
-    const testZ = baseZ + offset.z;
-    if (!wouldCollide(testX, testZ, 0, catalogItem, null)) {
-      return { x: testX, z: testZ };
+  for (const radius of RINGS) {
+    if (radius === 0) {
+      if (!wouldCollide(baseX, baseZ, 0, catalogItem, null)) {
+        return { x: baseX, z: baseZ };
+      }
+      continue;
+    }
+
+    for (let i = 0; i < DIRECTIONS; i++) {
+      const a = (i / DIRECTIONS) * Math.PI * 2;
+      const testX = baseX + Math.cos(a) * radius;
+      const testZ = baseZ + Math.sin(a) * radius;
+
+      if (!wouldCollide(testX, testZ, 0, catalogItem, null)) {
+        return { x: testX, z: testZ };
+      }
     }
   }
 
-  return { x: baseX, z: baseZ };
+  // The camera is always inside the room, so try there before giving
+  // up — better than the old fallback, which returned a point already
+  // known to collide and dropped furniture through the wall.
+  if (!wouldCollide(camera.position.x, camera.position.z, 0, catalogItem, null)) {
+    return { x: camera.position.x, z: camera.position.z };
+  }
+
+  return null;
 }
 
 buildUI(
@@ -220,8 +285,184 @@ buildUI(
   (mode) => {
     dragMode = mode;
     updateGizmoVisibility();
-  }
+  },
+  setWindowPlacementActive
 );
+
+// --------------------------------------------------
+// Window placement
+// --------------------------------------------------
+
+const WINDOW_WIDTH = 1.2 * PRESENTATION_SCALE;
+const WINDOW_SILL = 0.9 * PRESENTATION_SCALE;
+const WINDOW_HEAD = 2.1 * PRESENTATION_SCALE;
+const WINDOW_EDGE_MARGIN = 0.1 * PRESENTATION_SCALE;
+
+let windowPlacementActive = false;
+let windowGhost = null;
+let windowGhostValid = false;
+let windowGhostTarget = null;   // { wallData, offset }
+
+const placementRaycaster = new THREE.Raycaster();
+
+// While placing, the pointer is unlocked and the ghost follows the
+// mouse rather than the crosshair.
+const placementPointer = new THREE.Vector2(0, 0);
+
+window.addEventListener('mousemove', (event) => {
+  if (!windowPlacementActive) return;
+  placementPointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+  placementPointer.y = -((event.clientY / window.innerHeight) * 2 - 1);
+});
+
+// WALL_THICKNESS lives in floorplan.js; this only sizes the ghost.
+const WALL_THICKNESS_GUESS = 0.1 * PRESENTATION_SCALE;
+
+function createWindowGhost() {
+  const geo = new THREE.BoxGeometry(
+    WINDOW_WIDTH,
+    WINDOW_HEAD - WINDOW_SILL,
+    WALL_THICKNESS_GUESS * 1.2
+  );
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x00ff00,
+    transparent: true,
+    opacity: 0.4,
+    depthTest: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 999;
+  mesh.visible = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+function wallLengthOf(wallData) {
+  const dx = wallData.end.x - wallData.start.x;
+  const dz = wallData.end.z - wallData.start.z;
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
+/**
+ * Is [offset, offset+width] clear of this wall's doors and windows,
+ * and inside the wall with a margin at each end?
+ */
+function windowFitsOnWall(wallData, offset) {
+  const length = wallLengthOf(wallData);
+  const from = offset;
+  const to = offset + WINDOW_WIDTH;
+
+  if (from < WINDOW_EDGE_MARGIN) return false;
+  if (to > length - WINDOW_EDGE_MARGIN) return false;
+
+  for (const o of wallData.openings || []) {
+    if (from < o.offset + o.width && to > o.offset) return false;
+  }
+
+  for (const n of wallData.windows || []) {
+    if (from < n.offset + n.width && to > n.offset) return false;
+  }
+
+  return true;
+}
+
+function updateWindowGhost() {
+  if (!windowPlacementActive) return;
+
+  if (!windowGhost) windowGhost = createWindowGhost();
+
+  placementRaycaster.setFromCamera(placementPointer, camera);
+  const hits = placementRaycaster.intersectObjects(wallsGroup.children, true);
+
+  windowGhostValid = false;
+  windowGhostTarget = null;
+
+  // Frames, glass and door panels have no name, so walk past them to
+  // the first real wall behind — pointing at an existing window then
+  // still evaluates against the wall it sits in, and reports red.
+  let hit = null;
+  let wallData = null;
+
+  for (const h of hits) {
+    const w = floorPlan.walls.find(function (x) { return x.id === h.object.name; });
+    if (w) {
+      hit = h;
+      wallData = w;
+      break;
+    }
+  }
+
+  if (!hit) {
+    windowGhost.visible = false;
+    return;
+  }
+
+  // Where along the wall did we hit?
+  const dx = wallData.end.x - wallData.start.x;
+  const dz = wallData.end.z - wallData.start.z;
+  const length = Math.sqrt(dx * dx + dz * dz);
+  const ux = dx / length;
+  const uz = dz / length;
+
+  const along =
+    (hit.point.x - wallData.start.x) * ux + (hit.point.z - wallData.start.z) * uz;
+
+  const offset = along - WINDOW_WIDTH / 2;
+  const fits = windowFitsOnWall(wallData, offset);
+
+  const midDist = offset + WINDOW_WIDTH / 2;
+  windowGhost.position.set(
+    wallData.start.x + ux * midDist,
+    (WINDOW_SILL + WINDOW_HEAD) / 2,
+    wallData.start.z + uz * midDist
+  );
+  windowGhost.rotation.y = -Math.atan2(dz, dx);
+  windowGhost.material.color.set(fits ? 0x00ff00 : 0xff0000);
+  windowGhost.visible = true;
+
+  windowGhostValid = fits;
+  if (fits) windowGhostTarget = { wallData: wallData, offset: offset };
+}
+
+function placeWindow() {
+  if (!windowGhostValid || !windowGhostTarget) return;
+
+  const wallData = windowGhostTarget.wallData;
+  if (!wallData.windows) wallData.windows = [];
+
+  // Whichever side of the wall you are standing on when you place it
+  // is the inside — that is the only side it can be opened from.
+  const wdx = wallData.end.x - wallData.start.x;
+  const wdz = wallData.end.z - wallData.start.z;
+  const cross =
+    wdx * (camera.position.z - wallData.start.z) -
+    wdz * (camera.position.x - wallData.start.x);
+
+  wallData.windows.push({
+    offset: windowGhostTarget.offset,
+    width: WINDOW_WIDTH,
+    sillHeight: WINDOW_SILL,
+    headHeight: WINDOW_HEAD,
+    interiorSide: cross >= 0 ? 1 : -1,
+  });
+
+  rebuildWall(roomsGroup, wallData);
+  refreshOpenablePivots();
+}
+
+export function setWindowPlacementActive(active) {
+  windowPlacementActive = active;
+
+  if (active) {
+    // Free the mouse so the ghost can be aimed directly.
+    walkControls.unlock();
+  } else if (windowGhost) {
+    windowGhost.visible = false;
+  }
+
+  setWindowPlacingState(active);
+}
+window.setWindowPlacementActive = setWindowPlacementActive;
 
 const light = new THREE.DirectionalLight(0xffffff, 2);
 light.position.set(5, 10, 7);
@@ -348,6 +589,11 @@ const raycaster = new THREE.Raycaster();
 const screenCenter = new THREE.Vector2(0, 0);
 
 document.addEventListener('click', (event) => {
+  if (windowPlacementActive) {
+    placeWindow();
+    return;
+  }
+
   if (event.target.closest('#ui-panel')) return;
   if (transformControls.dragging) return;
   if (draggingInstance) return;
@@ -429,12 +675,32 @@ document.addEventListener('keydown', (e) => {
     }
   }
 
-  if (closestDoor) {
-    closestDoor.isOpen = !closestDoor.isOpen;
-    closestDoor.targetRotation = closestDoor.isOpen ? Math.PI / 2 : 0;
+  if (!closestDoor) return;
+
+  const ud = closestDoor.pivot.userData || {};
+
+  // A window opens only from the room it was placed in.
+  if (closestDoor.pivot.name === 'window_pivot' && ud.wallStart && ud.wallDir) {
+    const cross =
+      ud.wallDir.ux * (camera.position.z - ud.wallStart.z) -
+      ud.wallDir.uz * (camera.position.x - ud.wallStart.x);
+    const side = cross >= 0 ? 1 : -1;
+
+    if (side !== ud.interiorSide) return;
   }
+
+  // Doors swing toward the side chosen when the door was marked.
+  const swing = ud.swing === -1 ? -1 : 1;
+
+  closestDoor.isOpen = !closestDoor.isOpen;
+  closestDoor.targetRotation = closestDoor.isOpen ? -swing * (Math.PI / 2) : 0;
 });
 
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape' && windowPlacementActive) {
+    setWindowPlacementActive(false);
+  }
+});
 const PLAYER_RADIUS = 0.3;
 const collisionRaycaster = new THREE.Raycaster();
 
@@ -497,6 +763,8 @@ function animate() {
   for (const door of doorPivots) {
     door.pivot.rotation.y = THREE.MathUtils.lerp(door.pivot.rotation.y, door.targetRotation, 0.1);
   }
+
+  updateWindowGhost();
 
   renderer.render(scene, camera);
 }

@@ -5,40 +5,47 @@ import { PRESENTATION_SCALE } from './config.js';
 
 const WALL_HEIGHT = 2.5 * PRESENTATION_SCALE;
 const WALL_THICKNESS = 0.1 * PRESENTATION_SCALE;
-
-// Walls extend half a thickness past each end so perpendicular walls
-// fill the corner square instead of leaving a notch.
 const CORNER_EXTEND = WALL_THICKNESS / 2;
-
 const FRAME_THICKNESS = 0.12 * PRESENTATION_SCALE;
 const FRAME_DEPTH = WALL_THICKNESS * 0.9;
 
-function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
+function createWallSegment(
+  start, ux, uz, angle, fromDist, toDist, wallId, fromHeight, toHeight
+) {
+  const yLo = fromHeight === undefined ? 0 : fromHeight;
+  const yHi = toHeight === undefined ? WALL_HEIGHT : toHeight;
+
   const segLength = toDist - fromDist;
+  const segHeight = yHi - yLo;
   const midDist = (fromDist + toDist) / 2;
 
-  const geometry = new THREE.BoxGeometry(segLength, WALL_HEIGHT, WALL_THICKNESS);
+  const geometry = new THREE.BoxGeometry(segLength, segHeight, WALL_THICKNESS);
 
-    const sharedMaterial = new THREE.MeshStandardMaterial({
+  const sharedMaterial = new THREE.MeshStandardMaterial({
     color: 0xd8d8d0,
     polygonOffset: true,
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+
   const materials = [
     sharedMaterial,
     sharedMaterial,
     sharedMaterial,
     sharedMaterial,
-    new THREE.MeshStandardMaterial({ color: 0xd8d8d0 }),
-    new THREE.MeshStandardMaterial({ color: 0xd8d8d0 }),
+    new THREE.MeshStandardMaterial({
+      color: 0xd8d8d0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+    }),
+    new THREE.MeshStandardMaterial({
+      color: 0xd8d8d0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+    }),
   ];
 
   const wall = new THREE.Mesh(geometry, materials);
 
   wall.position.set(
     start.x + ux * midDist,
-    WALL_HEIGHT / 2,
+    yLo + segHeight / 2,
     start.z + uz * midDist
   );
 
@@ -47,7 +54,6 @@ function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
 
   return wall;
 }
-
 /**
  * Builds the framed door filling one opening on a wall.
  *
@@ -55,7 +61,7 @@ function createWallSegment(start, ux, uz, angle, fromDist, toDist, wallId) {
  * door is positioned using the wall's own direction and origin —
  * it cannot land anywhere except exactly in its opening.
  */
-function createDoorForOpening(start, ux, uz, angle, fromDist, toDist) {
+function createDoorForOpening(start, ux, uz, angle, fromDist, toDist, swing) {
   const openingWidth = toDist - fromDist;
   const midDist = (fromDist + toDist) / 2;
 
@@ -108,6 +114,8 @@ function createDoorForOpening(start, ux, uz, angle, fromDist, toDist) {
   doorPanel.position.set(panelWidth / 2, 0, 0);
   doorPivot.add(doorPanel);
   doorPivot.name = 'door_pivot';
+  // Which side the door swings into, chosen at trace time.
+  doorPivot.userData.swing = swing === -1 ? -1 : 1;
   doorGroup.add(doorPivot);
 
   const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
@@ -127,10 +135,118 @@ function createDoorForOpening(start, ux, uz, angle, fromDist, toDist) {
   return doorGroup;
 }
 
+function createWindowForOpening(start, ux, uz, angle, fromDist, toDist, sill, head, interiorSide) {
+  const openingWidth = toDist - fromDist;
+  const openingHeight = head - sill;
+  const midDist = (fromDist + toDist) / 2;
+
+  const group = new THREE.Group();
+  group.position.set(
+    start.x + ux * midDist,
+    0,
+    start.z + uz * midDist
+  );
+  group.rotation.y = -angle;
+  group.name = 'window_decorative';
+
+  const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x5c3a21 });
+  const FRAME_DEPTH = WALL_THICKNESS * 0.9;
+  const F = FRAME_THICKNESS * 0.7;
+
+  const midY = sill + openingHeight / 2;
+
+  const leftPost = new THREE.Mesh(
+    new THREE.BoxGeometry(F, openingHeight, FRAME_DEPTH), frameMaterial
+  );
+  leftPost.position.set(-openingWidth / 2 + F / 2, midY, 0);
+  group.add(leftPost);
+
+  const rightPost = new THREE.Mesh(
+    new THREE.BoxGeometry(F, openingHeight, FRAME_DEPTH), frameMaterial
+  );
+  rightPost.position.set(openingWidth / 2 - F / 2, midY, 0);
+  group.add(rightPost);
+
+  const head_ = new THREE.Mesh(
+    new THREE.BoxGeometry(openingWidth, F, FRAME_DEPTH), frameMaterial
+  );
+  head_.position.set(0, head - F / 2, 0);
+  group.add(head_);
+
+  const sill_ = new THREE.Mesh(
+    new THREE.BoxGeometry(openingWidth, F, FRAME_DEPTH), frameMaterial
+  );
+  sill_.position.set(0, sill + F / 2, 0);
+  group.add(sill_);
+
+  const paneW = openingWidth - F * 2;
+  const paneH = openingHeight - F * 2;
+
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(paneW, paneH, WALL_THICKNESS * 0.15),
+    new THREE.MeshStandardMaterial({
+      color: 0xaaccdd,
+      transparent: true,
+      opacity: 0.35,
+    })
+  );
+
+  const pivot = new THREE.Group();
+  pivot.position.set(-paneW / 2, midY, 0);
+  glass.position.set(paneW / 2, 0, 0);
+  pivot.add(glass);
+  pivot.name = 'window_pivot';
+  // Which side of the wall is the room this window belongs to.
+  // Recorded when placed; used so it only opens from inside.
+  pivot.userData.interiorSide = interiorSide === -1 ? -1 : 1;
+  pivot.userData.wallStart = { x: start.x, z: start.z };
+  pivot.userData.wallDir = { ux: ux, uz: uz };
+  group.add(pivot);
+
+  return group;
+}
+
+/**
+ * At a corner, both meeting walls used to extend half a thickness
+ * into the same square — their painted faces then sat in the same
+ * plane and flickered as the camera moved. Instead, exactly one wall
+ * owns each corner and extends into it; the others stop short.
+ *
+ * Ownership is by position, so it is stable across rebuilds: the
+ * first wall in the list touching a given point owns that point.
+ */
+let cornerOwners = {};
+
+function cornerKey(p) {
+  return p.x.toFixed(2) + ',' + p.z.toFixed(2);
+}
+
+function computeCornerOwners(walls) {
+  cornerOwners = {};
+
+  for (const w of walls) {
+    const kStart = cornerKey(w.start);
+    const kEnd = cornerKey(w.end);
+
+    if (cornerOwners[kStart] === undefined) {
+      cornerOwners[kStart] = w.id + ':start';
+    }
+    if (cornerOwners[kEnd] === undefined) {
+      cornerOwners[kEnd] = w.id + ':end';
+    }
+  }
+}
+
+function ownsCorner(wallData, which) {
+  const p = which === 'start' ? wallData.start : wallData.end;
+  return cornerOwners[cornerKey(p)] === wallData.id + ':' + which;
+}
+
 function buildWall(wallData) {
   const start = wallData.start;
   const end = wallData.end;
   const openings = wallData.openings || [];
+  const windows = wallData.windows || [];
   const id = wallData.id;
 
   const dx = end.x - start.x;
@@ -145,36 +261,105 @@ function buildWall(wallData) {
   const group = new THREE.Group();
   group.name = id + '_group';
 
-  if (openings.length === 0) {
+  // Only extend into a corner this wall owns.
+  const extStart = ownsCorner(wallData, 'start') ? CORNER_EXTEND : 0;
+  const extEnd = ownsCorner(wallData, 'end') ? CORNER_EXTEND : 0;
+
+  // Every feature that interrupts the wall, sorted along its length.
+  const features = [];
+
+  for (const o of openings) {
+    features.push({
+      kind: 'door',
+      from: o.offset,
+      to: o.offset + o.width,
+      swing: o.swing,
+    });
+  }
+
+  for (const w of windows) {
+    features.push({
+      kind: 'window',
+      from: w.offset,
+      to: w.offset + w.width,
+      sill: w.sillHeight,
+      head: w.headHeight,
+      interiorSide: w.interiorSide,
+    });
+  }
+
+  features.sort(function (a, b) { return a.from - b.from; });
+
+  if (features.length === 0) {
     group.add(
-      createWallSegment(start, ux, uz, angle, -CORNER_EXTEND, length + CORNER_EXTEND, id)
+      createWallSegment(start, ux, uz, angle, -extStart, length + extEnd, id)
     );
     return group;
   }
 
-    const sorted = openings.slice().sort(function (a, b) { return a.offset - b.offset; });
-  let cursor = -CORNER_EXTEND;
-  let isFirstSegment = true;
+  let cursor = -extStart;
 
-  for (const opening of sorted) {
-    const openStart = opening.offset;
-    const openEnd = opening.offset + opening.width;
-
-        if (openStart - FRAME_THICKNESS > cursor) {
-      group.add(createWallSegment(start, ux, uz, angle, cursor, openStart - FRAME_THICKNESS, id));
+  for (const f of features) {
+    if (f.kind === 'door') {
+      // Wall stops short by the frame thickness; the posts fill it.
+      if (f.from - FRAME_THICKNESS > cursor) {
+        group.add(
+          createWallSegment(start, ux, uz, angle, cursor, f.from - FRAME_THICKNESS, id)
+        );
+      }
+      group.add(createDoorForOpening(start, ux, uz, angle, f.from, f.to, f.swing));
+      cursor = f.to + FRAME_THICKNESS;
+    } else {
+      // Solid wall up to the window.
+      if (f.from > cursor) {
+        group.add(createWallSegment(start, ux, uz, angle, cursor, f.from, id));
+      }
+      // Wall below the sill and above the head; the window fills between.
+      if (f.sill > 0) {
+        group.add(createWallSegment(start, ux, uz, angle, f.from, f.to, id, 0, f.sill));
+      }
+      if (f.head < WALL_HEIGHT) {
+        group.add(
+          createWallSegment(start, ux, uz, angle, f.from, f.to, id, f.head, WALL_HEIGHT)
+        );
+      }
+      group.add(createWindowForOpening(start, ux, uz, angle, f.from, f.to, f.sill, f.head, f.interiorSide));
+      cursor = f.to;
     }
-
-    group.add(createDoorForOpening(start, ux, uz, angle, openStart, openEnd));
-
-    cursor = openEnd + FRAME_THICKNESS;
-    isFirstSegment = false;
   }
 
-  if (cursor < length + CORNER_EXTEND) {
-    group.add(createWallSegment(start, ux, uz, angle, cursor, length + CORNER_EXTEND, id));
+  if (cursor < length + extEnd) {
+    group.add(createWallSegment(start, ux, uz, angle, cursor, length + extEnd, id));
   }
 
   return group;
+}
+
+export function rebuildWall(floorPlanRoot, wallData) {
+  const wallsGroup = floorPlanRoot.getObjectByName('walls');
+  if (!wallsGroup) return null;
+
+  const existing = wallsGroup.children.find(function (c) {
+    return c.name === wallData.id + '_group';
+  });
+
+  if (existing) {
+    existing.traverse(function (o) {
+      if (o.isMesh) {
+        o.geometry.dispose();
+        if (Array.isArray(o.material)) {
+          o.material.forEach(function (m) { m.dispose(); });
+        } else if (o.material) {
+          o.material.dispose();
+        }
+      }
+    });
+    wallsGroup.remove(existing);
+  }
+
+  const rebuilt = buildWall(wallData);
+  wallsGroup.add(rebuilt);
+  return rebuilt;
 }
 
 function signedArea(corners) {
@@ -271,6 +456,8 @@ export function buildFloorPlan(floorPlan) {
   currentFloorPlanRef = floorPlan;
 
   const root = new THREE.Group();
+
+  computeCornerOwners(floorPlan.walls);
 
   const wallsGroup = new THREE.Group();
   wallsGroup.name = 'walls';

@@ -160,8 +160,14 @@ export function buildFurnitureLayer(
           model.position.x =
             placeholder.position.x;
 
-          model.position.y =
-            placeholder.position.y;
+          /*
+           * The wrapper is already grounded by
+           * normalizeModelSize — the model's base sits at
+           * y = 0 inside it. The placeholder is a box whose
+           * origin is its centre, so copying its y would
+           * lift the model by half its height.
+           */
+          model.position.y = 0;
 
           model.position.z =
             placeholder.position.z;

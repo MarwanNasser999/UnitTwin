@@ -30,6 +30,7 @@ let previewCursor = null;
 // --------------------------------------------------
 let doorWallId = null;      // wall currently selected for a door
 let doorFirstT = null;      // first click's position along that wall (0..1)
+let doorPendingOpening = null; // { offset, width } awaiting a swing side
 
 // --------------------------------------------------
 // Rooms — floors and ceilings only
@@ -45,6 +46,7 @@ let mode = 'idle';
 const SNAP_TOLERANCE_PX = 18;
 const WALL_LINE_SPLIT_TOLERANCE_PX = 12;
 const WALL_PICK_TOLERANCE_PX = 20;
+const DOOR_SIDE_MIN_PX = 12;
 const ORTHO_SNAP_DEGREES = 8;
 const COORD_SNAP_PX = 12;
 
@@ -196,18 +198,58 @@ export function redrawAll() {
   }
 
   // First door click, awaiting the second
-  if (mode === 'doors' && doorWallId && doorFirstT !== null) {
+  if (mode === 'doors' && doorWallId) {
     const wall = getWall(doorWallId);
-    if (wall) {
-      const a = getPoint(wall.pointA);
-      const b = getPoint(wall.pointB);
-      if (a && b) {
+    const a = wall ? getPoint(wall.pointA) : null;
+    const b = wall ? getPoint(wall.pointB) : null;
+
+    if (a && b) {
+      // First click placed, waiting for the second.
+      if (doorFirstT !== null) {
         drawMarker(
           a.pixelX + (b.pixelX - a.pixelX) * doorFirstT,
           a.pixelY + (b.pixelY - a.pixelY) * doorFirstT,
           '#ffdd00',
           8
         );
+      }
+
+      // Opening set, waiting for a side. A door can only open
+      // perpendicular to its wall, so show exactly those two
+      // directions: up/down on a horizontal wall, left/right on a
+      // vertical one, square to it on anything angled.
+      if (doorPendingOpening) {
+        const lengthM = wallLengthMeters(wall);
+        const t1 = doorPendingOpening.offset / lengthM;
+        const t2 = (doorPendingOpening.offset + doorPendingOpening.width) / lengthM;
+
+        const x1 = a.pixelX + (b.pixelX - a.pixelX) * t1;
+        const y1 = a.pixelY + (b.pixelY - a.pixelY) * t1;
+        const x2 = a.pixelX + (b.pixelX - a.pixelX) * t2;
+        const y2 = a.pixelY + (b.pixelY - a.pixelY) * t2;
+
+        drawLine(x1, y1, x2, y2, '#ffdd00', 5);
+
+        const midX = (x1 + x2) / 2;
+        const midY = (y1 + y2) / 2;
+
+        const wdx = b.pixelX - a.pixelX;
+        const wdy = b.pixelY - a.pixelY;
+        const wlen = Math.hypot(wdx, wdy) || 1;
+        const nx = -wdy / wlen;
+        const ny = wdx / wlen;
+
+        const ARROW = 45;
+
+        for (const sign of [1, -1]) {
+          const tipX = midX + nx * ARROW * sign;
+          const tipY = midY + ny * ARROW * sign;
+
+          drawLine(midX, midY, tipX, tipY, '#ffdd00', 3);
+          drawMarker(tipX, tipY, '#ffdd00', 7);
+        }
+
+        drawLabel(x1, y1, x2, y2, 'Click one arrow', '#ffdd00');
       }
     }
   }
@@ -219,6 +261,18 @@ export function redrawAll() {
     }
     for (const p of pts) {
       drawMarker(p.pixelX, p.pixelY, '#ff8800', 6);
+    }
+  }
+
+  if (mode === 'calibrate') {
+    for (const cp of calibrationPoints) {
+      drawMarker(cp.x, cp.y, '#00ff00', 6);
+    }
+
+    if (calibrationPoints.length === 1 && previewCursor) {
+      const a = calibrationPoints[0];
+      drawLine(a.x, a.y, previewCursor.x, previewCursor.y, '#00ff00', 2);
+      drawMarker(previewCursor.x, previewCursor.y, '#00ff00', 5);
     }
   }
 
@@ -264,9 +318,22 @@ export function enterCalibrateMode() {
   calibrationPoints = [];
 }
 
-function handleCalibrationClick(pixelX, pixelY, onCalibrationNeeded) {
-  calibrationPoints.push({ x: pixelX, y: pixelY });
-  drawMarker(pixelX, pixelY, '#00ff00');
+function handleCalibrationClick(pixelX, pixelY, onCalibrationNeeded, bypassSnapping) {
+  let x = pixelX;
+  let y = pixelY;
+
+  // CAD dimension lines are horizontal or vertical, so the second
+  // point snaps square to the first unless Shift is held.
+  if (calibrationPoints.length === 1 && bypassSnapping !== true) {
+    const a = calibrationPoints[0];
+    const snapped = applySnapping(x, y, { pixelX: a.x, pixelY: a.y });
+    x = snapped.x;
+    y = snapped.y;
+  }
+
+  calibrationPoints.push({ x: x, y: y });
+  previewCursor = null;
+  redrawAll();
 
   if (calibrationPoints.length === 2 && onCalibrationNeeded) {
     onCalibrationNeeded(calibrationPoints);
@@ -329,6 +396,7 @@ export function enterDoorMarkMode() {
   mode = 'doors';
   doorWallId = null;
   doorFirstT = null;
+  doorPendingOpening = null;
   previewCursor = null;
   redrawAll();
 }
@@ -337,6 +405,7 @@ export function exitDoorMarkMode() {
   mode = 'idle';
   doorWallId = null;
   doorFirstT = null;
+  doorPendingOpening = null;
   redrawAll();
 }
 
@@ -481,6 +550,18 @@ function splitWallAtPoint(wall, pixelX, pixelY) {
 // ==================================================
 
 export function setPreviewCursor(pixelX, pixelY, bypassSnapping) {
+  if (mode === 'calibrate') {
+    if (calibrationPoints.length === 1) {
+      const a = calibrationPoints[0];
+      const snapped = bypassSnapping === true
+        ? { x: pixelX, y: pixelY }
+        : applySnapping(pixelX, pixelY, { pixelX: a.x, pixelY: a.y });
+      previewCursor = { x: snapped.x, y: snapped.y };
+      redrawAll();
+    }
+    return;
+  }
+
   if (mode !== 'walls' || pixelsPerMeter === null) return;
 
   const existing = findNearbyPoint(pixelX, pixelY, SNAP_TOLERANCE_PX);
@@ -609,6 +690,7 @@ function handleDoorMarkClick(pixelX, pixelY, callbacks) {
     }
     doorWallId = hit.wall.id;
     doorFirstT = null;
+    doorPendingOpening = null;
     redrawAll();
     if (cb.onWallSelected) cb.onWallSelected(wallLengthMeters(hit.wall));
     return;
@@ -618,6 +700,7 @@ function handleDoorMarkClick(pixelX, pixelY, callbacks) {
   if (!wall) {
     doorWallId = null;
     doorFirstT = null;
+    doorPendingOpening = null;
     return;
   }
 
@@ -629,6 +712,42 @@ function handleDoorMarkClick(pixelX, pixelY, callbacks) {
   const dy = b.pixelY - a.pixelY;
   const lengthSq = dx * dx + dy * dy;
   if (lengthSq === 0) return;
+
+  // Third click: which side of the wall does the door swing into?
+  if (doorPendingOpening) {
+    // Dividing by the wall's length turns the cross product into a
+    // real perpendicular distance in pixels, so the threshold means
+    // the same on a long wall as on a short one.
+    const len = Math.sqrt(lengthSq);
+    const cross = (dx * (pixelY - a.pixelY) - dy * (pixelX - a.pixelX)) / len;
+
+    // A door can only swing perpendicular to its own wall, so the
+    // click has to land clearly on one side. Near the line itself the
+    // side is ambiguous — refuse rather than guess.
+    if (Math.abs(cross) < DOOR_SIDE_MIN_PX) {
+      if (cb.onDoorSideAmbiguous) cb.onDoorSideAmbiguous();
+      return;
+    }
+
+    const swing = cross >= 0 ? 1 : -1;
+
+    if (!wall.openings) wall.openings = [];
+    wall.openings.push({
+      offset: doorPendingOpening.offset,
+      width: doorPendingOpening.width,
+      swing: swing,
+    });
+
+    const placedWidth = doorPendingOpening.width;
+
+    doorPendingOpening = null;
+    doorWallId = null;
+    doorFirstT = null;
+    redrawAll();
+
+    if (cb.onDoorMarked) cb.onDoorMarked(getMarkedDoorCount(), placedWidth);
+    return;
+  }
 
   let t = ((pixelX - a.pixelX) * dx + (pixelY - a.pixelY) * dy) / lengthSq;
   t = Math.max(0, Math.min(1, t));
@@ -653,16 +772,14 @@ function handleDoorMarkClick(pixelX, pixelY, callbacks) {
     return;
   }
 
-  if (!wall.openings) wall.openings = [];
-  wall.openings.push({
+  // Hold the opening until a third click picks the swing side.
+  doorPendingOpening = {
     offset: parseFloat(offset.toFixed(3)),
     width: parseFloat(width.toFixed(3)),
-  });
+  };
 
-  doorWallId = null;
   redrawAll();
-
-  if (cb.onDoorMarked) cb.onDoorMarked(getMarkedDoorCount(), width);
+  if (cb.onDoorNeedsSide) cb.onDoorNeedsSide(width);
 }
 
 export function getMarkedDoorCount() {
@@ -675,6 +792,11 @@ export function getMarkedDoorCount() {
 
 export function undoLastMarkedDoor() {
   // Cancel an in-progress marking first.
+  if (doorPendingOpening) {
+    doorPendingOpening = null;
+    redrawAll();
+    return;
+  }
   if (doorFirstT !== null) {
     doorFirstT = null;
     redrawAll();
@@ -782,16 +904,6 @@ function findSelfIntersection(points) {
 // ==================================================
 // Commit room — floors and ceilings only. Doors live on walls.
 // ==================================================
-const COLLINEAR_TOLERANCE_M = 0.15;
-
-function projectOntoLine(point, segStart, segEnd, dx, dz, lengthSq) {
-  const t = ((point.x - segStart.x) * dx + (point.z - segStart.z) * dz) / lengthSq;
-  const projX = segStart.x + t * dx;
-  const projZ = segStart.z + t * dz;
-  const dist = Math.hypot(point.x - projX, point.z - projZ);
-  if (dist > COLLINEAR_TOLERANCE_M) return null;
-  return t;
-}
 
 export function commitCurrentRoom(roomId, roomLabel) {
   let points = currentRoomPointIds.slice();
@@ -815,37 +927,16 @@ export function commitCurrentRoom(roomId, roomLabel) {
 
   // Record which traced walls form this room's boundary, where one
   // exists. Purely informational — nothing is generated from it.
-    const wallIds = [];
-
+  const wallIds = [];
   for (let i = 0; i < points.length; i++) {
-    const aPoint = getPoint(points[i]);
-    const bPoint = getPoint(points[(i + 1) % points.length]);
-    if (!aPoint || !bPoint) continue;
+    const aId = points[i];
+    const bId = points[(i + 1) % points.length];
 
-    const segStart = { x: aPoint.meterX, z: aPoint.meterZ };
-    const segEnd = { x: bPoint.meterX, z: bPoint.meterZ };
-    const dx = segEnd.x - segStart.x;
-    const dz = segEnd.z - segStart.z;
-    const lengthSq = dx * dx + dz * dz;
-    if (lengthSq === 0) continue;
+    const wall = networkWalls.find(function (w) {
+      return (w.pointA === aId && w.pointB === bId) || (w.pointA === bId && w.pointB === aId);
+    });
 
-    // Any wall lying along this boundary segment belongs to the room,
-    // however many pieces the segment was traced in.
-    for (const wall of networkWalls) {
-      const wa = getPoint(wall.pointA);
-      const wb = getPoint(wall.pointB);
-      if (!wa || !wb) continue;
-
-      const ta = projectOntoLine({ x: wa.meterX, z: wa.meterZ }, segStart, segEnd, dx, dz, lengthSq);
-      const tb = projectOntoLine({ x: wb.meterX, z: wb.meterZ }, segStart, segEnd, dx, dz, lengthSq);
-      if (ta === null || tb === null) continue;
-
-      const lo = Math.min(ta, tb);
-      const hi = Math.max(ta, tb);
-      if (hi < -0.02 || lo > 1.02) continue;
-
-      if (wallIds.indexOf(wall.id) === -1) wallIds.push(wall.id);
-    }
+    if (wall && wallIds.indexOf(wall.id) === -1) wallIds.push(wall.id);
   }
 
   completedRooms.push({
@@ -869,7 +960,7 @@ export function onCanvasClick(pixelX, pixelY, callbacks, bypassSnapping) {
   const cb = callbacks || {};
 
   if (mode === 'calibrate') {
-    handleCalibrationClick(pixelX, pixelY, cb.onCalibrationNeeded);
+    handleCalibrationClick(pixelX, pixelY, cb.onCalibrationNeeded, bypassSnapping === true);
     return;
   }
 
@@ -911,7 +1002,7 @@ export function saveAllRoomsForPreview() {
     const ops = w.openings || [];
     if (ops.length > 0) {
       wallData.openings = ops.map(function (o) {
-        return { offset: o.offset, width: o.width };
+        return { offset: o.offset, width: o.width, swing: o.swing || 1 };
       });
     }
 
@@ -953,6 +1044,7 @@ export function startOver() {
 
   doorWallId = null;
   doorFirstT = null;
+  doorPendingOpening = null;
 
   completedRooms = [];
   currentRoomPointIds = [];

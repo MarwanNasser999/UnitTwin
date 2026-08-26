@@ -46,6 +46,7 @@ const doneDoorsBtn = document.getElementById('done-doors-btn');
 
 const defineRoomBtn = document.getElementById('define-room-btn');
 const finishRoomBtn = document.getElementById('finish-room-btn');
+const cancelRoomBtn = document.getElementById('cancel-room-btn');
 
 const undoBtn = document.getElementById('undo-btn');
 const startOverBtn = document.getElementById('start-over-btn');
@@ -71,6 +72,7 @@ function setStage(stage) {
 
   defineRoomBtn.style.display = stage === 'ready' ? 'inline-block' : 'none';
   finishRoomBtn.style.display = stage === 'room' ? 'inline-block' : 'none';
+  cancelRoomBtn.style.display = stage === 'room' ? 'inline-block' : 'none';
 
   undoBtn.style.display =
     stage === 'walls' || stage === 'doors' || stage === 'room' ? 'inline-block' : 'none';
@@ -153,6 +155,14 @@ canvas.addEventListener('click', (event) => {
       status.textContent = 'Click on a wall line to select it, then click two points along that wall.';
     },
 
+    onDoorNeedsSide: (width) => {
+      status.textContent = `Doorway ${width.toFixed(2)}m wide. Now click one of the two arrows to set which way it opens.`;
+    },
+
+    onDoorSideAmbiguous: () => {
+      status.textContent = 'Too close to the wall to tell which side — click further out, toward one of the arrows.';
+    },
+
     onDoorMarked: (count, width) => {
       status.textContent = `Door added (${width.toFixed(2)}m). ${count} total. Click another wall, or "Done Adding Doors".`;
     },
@@ -220,7 +230,7 @@ finishWallsBtn.addEventListener('click', () => {
 markDoorsBtn.addEventListener('click', () => {
   enterDoorMarkMode();
   setStage('doors');
-  status.textContent = 'Click a wall to select it, then click two points along that wall to mark the doorway.';
+  status.textContent = 'Click a wall to select it, two points along it for the doorway, then the side it opens into.';
 });
 
 doneDoorsBtn.addEventListener('click', () => {
@@ -275,13 +285,16 @@ finishRoomBtn.addEventListener('click', () => {
   }
 
   exitRoomMode();
+  setStage('ready');
 
-  // Resume wall tracing so the existing points stay clickable for
-  // the next room.
-  enterWallMode();
-  setStage('walls');
+  status.textContent = `${getCompletedRoomCount()} room(s) defined. "Define Room" for the next one, "Mark Doors" to cut doorways, or "Trace Walls" to add more walls.`;
+});
 
-  status.textContent = `${getCompletedRoomCount()} room(s) defined. Continue tracing walls, or "Finish Walls" then "Define Room" for the next one.`;
+// Cancel out of room definition without committing anything.
+cancelRoomBtn.addEventListener('click', () => {
+  exitRoomMode();
+  setStage('ready');
+  status.textContent = 'Room cancelled. Nothing was saved.';
 });
 
 // --------------------------------------------------
@@ -317,7 +330,6 @@ preview3dBtn.addEventListener('click', () => {
   exitDoorMarkMode();
   exitRoomMode();
   setStage('ready');
-  
 
   saveAllRoomsForPreview();
   window.open(`/index.html?t=${Date.now()}`, '_blank');
