@@ -47,6 +47,23 @@ export function buildUI(
   renderPanel(panel, roomsGroup);
 }
 
+/**
+ * Point the panel at a different storey. Rooms and walls belong to a
+ * storey, so switching floors has to repoint the panel or it keeps
+ * listing the previous storey's rooms.
+ */
+export function setActiveStoreyInUI(activeFloorPlan, roomsGroup) {
+  floorPlan = activeFloorPlan;
+  roomsGroupRef = roomsGroup;
+
+  selectedRoomId = floorPlan.rooms[0] ? floorPlan.rooms[0].id : null;
+  selectedWallId = null;
+  selectedFurnitureId = null;
+  panelMode = null;
+
+  if (panelEl) renderPanel(panelEl, roomsGroupRef);
+}
+
 export function togglePanel() {
   if (!panelEl) return;
   panelEl.classList.toggle('visible');

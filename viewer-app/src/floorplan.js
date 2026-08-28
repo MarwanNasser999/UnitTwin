@@ -7,6 +7,13 @@ const WALL_HEIGHT = 2.5 * PRESENTATION_SCALE;
 const WALL_THICKNESS = 0.1 * PRESENTATION_SCALE;
 const CORNER_EXTEND = WALL_THICKNESS / 2;
 const FRAME_THICKNESS = 0.12 * PRESENTATION_SCALE;
+
+// A storey's ceiling sits at wall height, and the storey above
+// starts its floor at exactly that height — two coincident
+// surfaces across the whole building. Dropping the ceiling a
+// couple of centimetres separates them while keeping both
+// paintable. The gap is behind the walls, so it never shows.
+const CEILING_INSET = 0.02 * PRESENTATION_SCALE;
 const FRAME_DEPTH = WALL_THICKNESS * 0.9;
 
 function createWallSegment(
@@ -445,17 +452,34 @@ function createCeiling(corners, wallHeight) {
   const ceiling = new THREE.Mesh(geometry, material);
   ceiling.name = 'ceiling';
   ceiling.rotation.x = Math.PI / 2;
-  ceiling.position.y = wallHeight;
+  ceiling.position.y = wallHeight - CEILING_INSET;
 
   return ceiling;
 }
 
 let currentFloorPlanRef = null;
 
+/**
+ * Every storey is built at startup, so buildFloorPlan leaves this
+ * pointing at whichever was built last. Texture lookups go through
+ * it, so switching storeys has to repoint it or painting silently
+ * targets the wrong floor's data.
+ */
+export function setActiveStoreyRef(storey) {
+  currentFloorPlanRef = storey;
+}
+
+/**
+ * Builds one storey. The storey's own `base` lifts the whole group,
+ * so its walls, floors and ceilings are authored at y = 0 exactly as
+ * before and nothing inside has to know which floor it is on.
+ */
 export function buildFloorPlan(floorPlan) {
   currentFloorPlanRef = floorPlan;
 
   const root = new THREE.Group();
+  root.name = 'storey_' + (floorPlan.id || 'ground');
+  root.position.y = floorPlan.base || 0;
 
   computeCornerOwners(floorPlan.walls);
 

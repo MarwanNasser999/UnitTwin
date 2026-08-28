@@ -49,77 +49,27 @@ viewer-app/
 - [x] Engine hardening — arbitrary polygon room shapes (not just rectangles),
       ceiling generation, proper UV mapping for non-rectangular surfaces
 - [ ] Phase 4 — Floor plan input pipeline (in progress):
-      - [x] V1 — Manual trace tool: image upload, calibration (with
-            verification/recalibration), corner tracing, multi-room
-            support, duplicate-ID prevention, direct "Preview in 3D"
-            connection via localStorage
-      - [x] V2 — Doors. Went through several designs before landing on
-            the right one: a door is an **opening on a specific wall**
-            (`{offset, width}` in metres along that wall), not a gap
-            inferred between walls. Mark Doors selects a wall, then two
-            clicks along it set the opening; both clicks project onto
-            that wall's own line, so the door is always exactly on the
-            wall regardless of click precision. `buildWall` splits the
-            wall around its openings — solid wall, door, solid wall —
-            all from one wall's coordinates. A shared wall is one wall,
-            so a shared doorway is one opening: no duplicates, no
-            proximity matching, no filler geometry. The door itself is
-            procedural (frame posts, lintel, panel on a hinge-ready
-            pivot, handles both sides) and scales to its opening.
-      - [x] V3 — Shared wall network + reliable tracing:
-            - Walls are traced once into a shared point/wall network;
-              rooms are defined by selecting existing points, so shared
-              walls are structurally impossible to duplicate
-            - **Ortho snap** (segments within 8° of horizontal/vertical
-              snap to exact) and **coordinate snap** (a new point's X/Y
-              snaps onto an existing point's X/Y) — clicks are never
-              pixel-perfect, and without these walls lean by a few
-              centimetres and corners drift apart. Shift bypasses both
-              for genuinely angled walls.
-            - **Live preview**: green line from the last point to the
-              cursor with its length, showing the snapped result before
-              committing
-            - **T-junctions**: clicking an existing wall's line splits
-              it and inserts a point there. The split is checked at the
-              raw click, *before* snapping, since snapping would
-              otherwise nudge the click off the wall it was aimed at.
-            - Self-intersection validation on room definition
-            - Room boundaries collect every wall lying along each
-              segment, so a side traced in several pieces still selects
-              and paints correctly
-            - Calibration behaves like wall tracing: a live rubber-band
-              line, and the second point snapping square to the first
-              (Shift to override), since CAD dimension lines are
-              horizontal or vertical
-            - Marking a door takes a third click for the side it swings
-              into. Two arrows are drawn perpendicular to the wall —
-              the only directions a door on that wall can open — and a
-              click too near the wall line is refused as ambiguous
-            - Cancel Room; committing a room returns to the ready stage
-              instead of forcing wall-tracing mode
-      - [x] V4 — Windows. Picked from the panel and placed in the
-            viewer: the pointer unlocks, a ghost follows the mouse and
-            reads green where it fits, red over a door, another window,
-            or too near a corner. Placement writes `{offset, width,
-            sillHeight, headHeight, interiorSide}` onto the wall and
-            rebuilds just that wall.
-            - `createWallSegment` gained a height range, so a wall can
-              be cut partway up — solid below the sill and above the
-              head. Doors are still full-height; this is the same
-              capability a short door will need to have wall built
-              above it.
-            - Whichever side of the wall you stand on when placing is
-              recorded as the interior, and E only opens the window
-              from that side.
-            - Making the viewer place windows made it an editor rather
-              than a pure reader. Placements live in memory only —
-              persisting them means the viewer writing back to the
-              saved plan, which is really a backend question.
-      - [ ] V5 — Automated CAD/DXF/vector-PDF parsing; VLM-based
-            parsing for scanned/rasterised plans as a further stretch
-            tier. Phase 4 closes once this ships.
-- [x] Wall/floor/ceiling selection verified against real multi-room
-      traced data, including walls traced in multiple pieces
+      - [x] V1 — Manual trace tool. Upload a plan image, calibrate
+            against a known dimension, trace rooms, preview in 3D.
+      - [x] V2 — Doors. A door is an opening on a specific wall, with
+            a swing side chosen while tracing.
+      - [x] V3 — Shared wall network. Walls traced once and shared
+            between rooms; snapping to square angles and to existing
+            points; T-junctions; live preview while tracing.
+      - [x] V4 — Windows. Placed in the 3D viewer with a ghost that
+            shows where it fits, cutting a partial-height hole. Opens
+            from inside only.
+      - [~] V5 — Multiple floors. Storeys stack at their own heights,
+            with a floor selector and a show-all view. Floors are
+            traced from one sheet or from separate images, aligned on a
+            corner marked on each. Canvas zoom and 5cm length snapping
+            for accuracy.
+            - [ ] Balconies — open floor with a railing, no ceiling
+            - [ ] Staircases — traced when the plan shows one, placed
+                  by hand in the viewer when it does not
+      - [ ] V6 — Automation. Read CAD, DXF and vector PDF directly
+            instead of tracing by hand. Scanned plans via a vision
+            model as a later tier. Phase 4 closes once this ships.
 - [ ] Phase 5 — Multi-unit / developer dashboard
 - [ ] Phase 6 — Sales tool features: lead capture, analytics, buyer
       preference prediction (real applied ML on behavioral data)
@@ -278,13 +228,30 @@ viewer-app/
   overlap itself is inherent to boxes-on-centrelines and needs the
   mitred rewrite scheduled in the visual quality overhaul.
 - No collision on doors or windows: you can walk through a closed one.
+- Storey height is a module constant (`WALL_HEIGHT`), not read from
+  `storey.height`. Both are 2.5m so they agree today, but a storey with
+  a different height would build walls at the wrong height while its
+  base offset assumed otherwise. Threading the height through walls,
+  doors and windows is the fix.
+- Stacked storeys leave a 2cm void between a ceiling and the floor
+  above. Deliberate — it separates two otherwise coincident surfaces
+  and keeps both paintable. Hidden behind the walls; a real slab with
+  thickness belongs with the mitred wall rewrite.
 - Furniture rotates freely and pushes itself clear of walls when a turn
   would collide. It works, but the honest fix is proper placement
   behaviour in the visual pass.
 - Window placements live in memory only. Reloading loses them, since
   the trace tool owns the saved plan and rewrites it wholesale.
-- Calibration accuracy is unverified — reported as slightly off away
-  from the calibrated distance, not yet measured.
+- Tracing precision is bounded by the drawing. Two floors on one sheet
+  means each is small, so a pixel of click error is worth centimetres
+  rather than millimetres. Zoom and length snapping help; a
+  higher-resolution source, or V6's vector parsing, is the real answer.
+- `ALIGN_STOREY_FOOTPRINTS` stretches upper storeys to match the ground
+  floor's extents. Right for floors that share a footprint, wrong for a
+  genuine setback — and it cannot fix two traces that disagree about
+  the shape itself, only their overall size.
+- Window placements and any storey switching live in memory. The trace
+  tool owns the saved plan and rewrites it wholesale.
 - Wall thickness is a single global constant; real plans have varying
   thicknesses (exterior vs. partition).
 

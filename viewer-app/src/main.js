@@ -3,7 +3,12 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-import { buildFloorPlan, rebuildWall, getWallOBB } from './floorplan.js';
+import {
+  buildFloorPlan,
+  rebuildWall,
+  getWallOBB,
+  setActiveStoreyRef,
+} from './floorplan.js';
 import { floorPlan as defaultFloorPlan } from './floorplanData.js';
 import { buildFurnitureLayer, getFurnitureOBB } from './furniture.js';
 import { placedFurniture, furnitureCatalog } from './furnitureData.js';
@@ -18,28 +23,63 @@ import {
   deselectAll,
   togglePanel,
   setWindowPlacingState,
+  setActiveStoreyInUI,
 } from './ui.js';
 
 import { PRESENTATION_SCALE } from './config.js';
 
-function getActiveFloorPlan() {
+/*
+ * A building is a list of storeys, each a complete floor plan plus a
+ * base height:
+ *
+ *   { storeys: [ { id, label, base, height, walls, rooms } ] }
+ *
+ * Plans saved before storeys existed are a bare { walls, rooms }, so
+ * they get wrapped into a single ground storey on load and keep
+ * working untouched.
+ */
+
+const DEFAULT_STOREY_HEIGHT = 2.5;
+
+function normaliseToBuilding(plan) {
+  if (plan && Array.isArray(plan.storeys) && plan.storeys.length > 0) {
+    return plan;
+  }
+
+  return {
+    storeys: [
+      {
+        id: 'ground',
+        label: 'Ground Floor',
+        base: 0,
+        height: DEFAULT_STOREY_HEIGHT,
+        walls: plan.walls || [],
+        rooms: plan.rooms || [],
+      },
+    ],
+  };
+}
+
+function getActiveBuilding() {
   const saved = localStorage.getItem('unittwin_trace_preview');
 
   if (saved) {
     try {
-      return JSON.parse(saved);
+      return normaliseToBuilding(JSON.parse(saved));
     } catch (e) {
       console.error('Failed to parse saved trace data, using default.', e);
     }
   }
 
-  return defaultFloorPlan;
+  return normaliseToBuilding(defaultFloorPlan);
 }
 
-function scaleFloorPlan(plan, scale) {
+function scaleStorey(storey, scale) {
   return {
-    ...plan,
-    walls: plan.walls.map((w) => ({
+    ...storey,
+    base: storey.base * scale,
+    height: storey.height * scale,
+    walls: storey.walls.map((w) => ({
       ...w,
       start: { x: w.start.x * scale, z: w.start.z * scale },
       end: { x: w.end.x * scale, z: w.end.z * scale },
@@ -55,14 +95,27 @@ function scaleFloorPlan(plan, scale) {
           }))
         : undefined,
     })),
-    rooms: plan.rooms.map((r) => ({
+    rooms: storey.rooms.map((r) => ({
       ...r,
       corners: r.corners.map((c) => ({ x: c.x * scale, z: c.z * scale })),
     })),
   };
 }
-const sourceFloorPlan = getActiveFloorPlan();
-const floorPlan = scaleFloorPlan(sourceFloorPlan, PRESENTATION_SCALE);
+
+function scaleBuilding(building, scale) {
+  return {
+    ...building,
+    storeys: building.storeys.map((s) => scaleStorey(s, scale)),
+  };
+}
+
+const sourceBuilding = getActiveBuilding();
+const building = scaleBuilding(sourceBuilding, PRESENTATION_SCALE);
+
+// Only one storey is walkable at a time. Everything that used to read
+// the flat plan now reads the active storey instead.
+let activeStoreyIndex = 0;
+let floorPlan = building.storeys[activeStoreyIndex];
 
 // Register synthetic doorway header wall IDs into each room's
 // wallIds array (and give ui.js a real, labelable wall-data entry),
@@ -87,8 +140,15 @@ const camera = new THREE.PerspectiveCamera(
   1000
 );
 
-const spawnCenter = calculateRoomCenter(floorPlan.rooms[0]);
-camera.position.set(spawnCenter.x, 1.6, spawnCenter.z);
+const EYE_HEIGHT = 1.6;
+
+function moveCameraToStorey(storey) {
+  if (!storey.rooms || storey.rooms.length === 0) return;
+  const c = calculateRoomCenter(storey.rooms[0]);
+  camera.position.set(c.x, (storey.base || 0) + EYE_HEIGHT, c.z);
+}
+
+moveCameraToStorey(floorPlan);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -98,8 +158,22 @@ const walkControls = new PointerLockControls(camera, document.body);
 const orbitControls = new OrbitControls(camera, renderer.domElement);
 orbitControls.enabled = false;
 
-const roomsGroup = buildFloorPlan(floorPlan);
-scene.add(roomsGroup);
+/*
+ * Every storey is built once. Only the active one is visible and
+ * collidable — walking the first floor should not bump into ground
+ * floor walls, and hidden storeys must not block the view.
+ *
+ * roomsGroup and wallsGroup always point at the active storey, so
+ * everything downstream keeps reading them exactly as before.
+ */
+const storeyGroups = building.storeys.map((storey) => {
+  const group = buildFloorPlan(storey);
+  scene.add(group);
+  return group;
+});
+
+let roomsGroup = storeyGroups[activeStoreyIndex];
+setActiveStoreyRef(floorPlan);
 window.roomsGroup = roomsGroup;
 
 // --------------------------------------------------
@@ -124,7 +198,7 @@ function refreshOpenablePivots() {
 }
 refreshOpenablePivots();
 
-const wallsGroup = roomsGroup.getObjectByName('walls');
+let wallsGroup = roomsGroup.getObjectByName('walls');
 
 let furnitureGroup = buildFurnitureLayer(placedFurniture);
 scene.add(furnitureGroup);
@@ -290,6 +364,105 @@ buildUI(
 );
 
 // --------------------------------------------------
+// Storey switching
+// --------------------------------------------------
+
+// Walking happens on one storey, but seeing the building stacked is
+// useful on its own. Collision, the camera and the panel always follow
+// the active storey regardless.
+let showAllStoreys = false;
+
+function applyStoreyVisibility() {
+  storeyGroups.forEach((group, i) => {
+    group.visible = showAllStoreys || i === activeStoreyIndex;
+  });
+}
+
+function setActiveStorey(index) {
+  if (index < 0 || index >= building.storeys.length) return;
+  if (index === activeStoreyIndex) return;
+
+  // Placing a window on a storey you are leaving makes no sense.
+  if (windowPlacementActive) setWindowPlacementActive(false);
+
+  deselectAll();
+  transformControls.detach();
+
+  activeStoreyIndex = index;
+  floorPlan = building.storeys[index];
+
+  roomsGroup = storeyGroups[index];
+  wallsGroup = roomsGroup.getObjectByName('walls');
+  window.roomsGroup = roomsGroup;
+
+  setActiveStoreyRef(floorPlan);
+  applyStoreyVisibility();
+  refreshOpenablePivots();
+  moveCameraToStorey(floorPlan);
+
+  setActiveStoreyInUI(floorPlan, roomsGroup);
+  renderStoreySelector();
+}
+
+function renderStoreySelector() {
+  let bar = document.getElementById('storey-selector');
+
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'storey-selector';
+    bar.style.position = 'fixed';
+    bar.style.right = '16px';
+    bar.style.top = '16px';
+    bar.style.display = 'flex';
+    bar.style.flexDirection = 'column';
+    bar.style.gap = '6px';
+    bar.style.zIndex = '20';
+    document.body.appendChild(bar);
+  }
+
+  bar.innerHTML = '';
+
+  const allBtn = document.createElement('button');
+  allBtn.textContent = showAllStoreys ? 'Showing all floors' : 'Show all floors';
+  allBtn.style.padding = '6px 12px';
+  allBtn.style.cursor = 'pointer';
+  allBtn.style.border = showAllStoreys ? '2px solid #4af' : '1px solid #666';
+  allBtn.style.background = showAllStoreys ? '#2a3a4a' : '#222';
+  allBtn.style.color = '#fff';
+  allBtn.style.marginBottom = '4px';
+
+  allBtn.addEventListener('click', () => {
+    showAllStoreys = !showAllStoreys;
+    applyStoreyVisibility();
+    renderStoreySelector();
+  });
+
+  bar.appendChild(allBtn);
+
+  // Topmost storey first, so the list reads like the building looks.
+  building.storeys
+    .map((storey, index) => ({ storey, index }))
+    .sort((a, b) => b.storey.base - a.storey.base)
+    .forEach(({ storey, index }) => {
+      const btn = document.createElement('button');
+      btn.textContent = storey.label || storey.id;
+      btn.style.padding = '6px 12px';
+      btn.style.cursor = 'pointer';
+      btn.style.border = index === activeStoreyIndex ? '2px solid #4af' : '1px solid #666';
+      btn.style.background = index === activeStoreyIndex ? '#2a3a4a' : '#222';
+      btn.style.color = '#fff';
+
+      btn.addEventListener('click', () => setActiveStorey(index));
+      bar.appendChild(btn);
+    });
+}
+
+applyStoreyVisibility();
+
+// A single storey needs no selector.
+if (building.storeys.length > 1) renderStoreySelector();
+
+// --------------------------------------------------
 // Window placement
 // --------------------------------------------------
 
@@ -411,9 +584,12 @@ function updateWindowGhost() {
   const fits = windowFitsOnWall(wallData, offset);
 
   const midDist = offset + WINDOW_WIDTH / 2;
+  // The ghost lives in the scene, not the storey group, so the
+  // storey's own height has to be added — otherwise on an upper floor
+  // it hovers down at ground level.
   windowGhost.position.set(
     wallData.start.x + ux * midDist,
-    (WINDOW_SILL + WINDOW_HEAD) / 2,
+    (floorPlan.base || 0) + (WINDOW_SILL + WINDOW_HEAD) / 2,
     wallData.start.z + uz * midDist
   );
   windowGhost.rotation.y = -Math.atan2(dz, dx);

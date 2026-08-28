@@ -27,6 +27,7 @@
     }
     canvas {
       display: block;
+      transform-origin: top left;
     }
     button {
       padding: 6px 12px;
@@ -58,6 +59,17 @@
     <button id="cancel-room-btn" style="display: none;">Cancel Room</button>
 
     <button id="undo-btn" style="display: none;">Undo</button>
+
+    <button id="new-floor-btn" style="display: none;">New Floor</button>
+
+    <span style="margin-left:8px;opacity:0.6;">|</span>
+    <button id="snap-length-btn" title="Snap wall lengths to 5cm">Round lengths: on</button>
+    <span style="opacity:0.6;">|</span>
+    <button id="zoom-out-btn" title="Zoom out">&minus;</button>
+    <span id="zoom-label" style="min-width:44px;text-align:center;font-size:13px;">100%</span>
+    <button id="zoom-in-btn" title="Zoom in">+</button>
+    <button id="zoom-reset-btn" title="Reset zoom">Fit</button>
+    <span style="margin-right:8px;opacity:0.6;">|</span>
 
     <button id="start-over-btn">Start Over</button>
     <button id="preview-3d-btn">Preview in 3D</button>

@@ -26,6 +26,13 @@ import {
   getCompletedRoomCount,
   getNetworkWallCount,
   saveAllRoomsForPreview,
+  startNewFloor,
+  hasCurrentStoreyWork,
+  getStoreyCount,
+  isAwaitingRefPoint,
+  setLengthSnapEnabled,
+  isLengthSnapEnabled,
+  getPreviousRefPoint,
   debugDumpNetwork,
 } from './traceCanvas.js';
 
@@ -49,6 +56,23 @@ const finishRoomBtn = document.getElementById('finish-room-btn');
 const cancelRoomBtn = document.getElementById('cancel-room-btn');
 
 const undoBtn = document.getElementById('undo-btn');
+const newFloorBtn = document.getElementById('new-floor-btn');
+
+/*
+ * Two ways a building arrives:
+ *
+ *   one drawing holding several floors  → New Floor moves to the next
+ *   one drawing per floor               → Choose File adds the next
+ *
+ * Asked once, at the first load. The button only appears in the first
+ * case, since in the second it would mean nothing.
+ */
+let multiFloorSheet = false;
+const snapLengthBtn = document.getElementById('snap-length-btn');
+const zoomInBtn = document.getElementById('zoom-in-btn');
+const zoomOutBtn = document.getElementById('zoom-out-btn');
+const zoomResetBtn = document.getElementById('zoom-reset-btn');
+const zoomLabel = document.getElementById('zoom-label');
 const startOverBtn = document.getElementById('start-over-btn');
 const preview3dBtn = document.getElementById('preview-3d-btn');
 
@@ -71,11 +95,88 @@ function setStage(stage) {
   doneDoorsBtn.style.display = stage === 'doors' ? 'inline-block' : 'none';
 
   defineRoomBtn.style.display = stage === 'ready' ? 'inline-block' : 'none';
+  newFloorBtn.style.display =
+    multiFloorSheet && stage === 'ready' ? 'inline-block' : 'none';
   finishRoomBtn.style.display = stage === 'room' ? 'inline-block' : 'none';
   cancelRoomBtn.style.display = stage === 'room' ? 'inline-block' : 'none';
 
   undoBtn.style.display =
     stage === 'walls' || stage === 'doors' || stage === 'room' ? 'inline-block' : 'none';
+}
+
+/**
+ * A small modal with real, labelled buttons. confirm() only offers
+ * OK and Cancel, which forces the reader to work out which choice is
+ * which — bad for anything that discards work.
+ *
+ * options: [{ label, detail, value }]
+ */
+function askChoice(title, options) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;' +
+      'display:flex;align-items:center;justify-content:center;';
+
+    const box = document.createElement('div');
+    box.style.cssText =
+      'background:#222;color:#fff;border:1px solid #555;border-radius:6px;' +
+      'padding:20px;max-width:460px;font-family:sans-serif;';
+
+    const headRow = document.createElement('div');
+    headRow.style.cssText =
+      'display:flex;align-items:flex-start;gap:12px;margin-bottom:16px;';
+
+    const heading = document.createElement('div');
+    heading.textContent = title;
+    heading.style.cssText = 'font-size:15px;line-height:1.4;flex:1;';
+    headRow.appendChild(heading);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '\u00d7';
+    closeBtn.title = 'Cancel';
+    closeBtn.style.cssText =
+      'background:none;border:none;color:#aaa;font-size:22px;line-height:1;' +
+      'cursor:pointer;padding:0 4px;';
+
+    closeBtn.addEventListener('click', () => {
+      document.body.removeChild(overlay);
+      resolve(null);
+    });
+
+    headRow.appendChild(closeBtn);
+    box.appendChild(headRow);
+
+    options.forEach((opt) => {
+      const btn = document.createElement('button');
+      btn.style.cssText =
+        'display:block;width:100%;text-align:left;margin-bottom:8px;' +
+        'padding:10px 12px;background:#2d3a48;color:#fff;border:1px solid #4a6a8a;' +
+        'border-radius:4px;cursor:pointer;font-size:14px;';
+
+      const label = document.createElement('div');
+      label.textContent = opt.label;
+      label.style.fontWeight = 'bold';
+      btn.appendChild(label);
+
+      if (opt.detail) {
+        const detail = document.createElement('div');
+        detail.textContent = opt.detail;
+        detail.style.cssText = 'opacity:0.75;font-size:12px;margin-top:3px;';
+        btn.appendChild(detail);
+      }
+
+      btn.addEventListener('click', () => {
+        document.body.removeChild(overlay);
+        resolve(opt.value);
+      });
+
+      box.appendChild(btn);
+    });
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
 }
 
 function askForDistance() {
@@ -102,16 +203,73 @@ function askForDistance() {
 // Image loading
 // --------------------------------------------------
 
-imageInput.addEventListener('change', (event) => {
+imageInput.addEventListener('change', async (event) => {
   const file = event.target.files[0];
+
+  // Selecting the same file twice fires no change event unless the
+  // input is cleared.
+  event.target.value = '';
+
   if (!file) return;
+
+  let keepStoreys = false;
+
+  if (getStoreyCount() > 0) {
+    const answer = await askChoice('You already have traced floors. What is this drawing?', [
+      {
+        label: 'Another floor of the same building',
+        detail: 'Keeps everything traced so far and adds this as the next floor.',
+        value: true,
+      },
+      {
+        label: 'A new project',
+        detail: 'Discards every floor traced so far.',
+        value: false,
+      },
+    ]);
+
+    // Dismissed — leave everything as it was.
+    if (answer === null) {
+      status.textContent = 'Cancelled. Nothing was changed.';
+      return;
+    }
+
+    keepStoreys = answer;
+
+    // Floors arriving as separate drawings are added by loading each
+    // one, so New Floor has no role here.
+    if (keepStoreys) multiFloorSheet = false;
+  } else {
+    const answer = await askChoice('How many floors are in this drawing?', [
+      {
+        label: 'Several floors on one sheet',
+        detail: 'A "New Floor" button appears for moving to the next one.',
+        value: true,
+      },
+      {
+        label: 'Just one floor',
+        detail: 'Load another image later to add the next floor.',
+        value: false,
+      },
+    ]);
+
+    if (answer === null) {
+      status.textContent = 'Cancelled. No image loaded.';
+      return;
+    }
+
+    multiFloorSheet = answer;
+  }
 
   status.textContent = 'Loading image...';
 
   loadImageFile(file, () => {
-    status.textContent = 'Image loaded. Click "Calibrate" to begin.';
+    setCanvasZoom(1);
+    status.textContent =
+      'Image loaded. Zoom in before tracing — precision here is what ' +
+      'decides how well the floors line up. Click "Calibrate" to begin.';
     setStage('start');
-  });
+  }, keepStoreys);
 });
 
 // --------------------------------------------------
@@ -120,10 +278,48 @@ imageInput.addEventListener('change', (event) => {
 
 const canvas = getCanvas();
 
-canvas.addEventListener('click', (event) => {
+/*
+ * Two plans on one sheet means each is small on screen, and a few
+ * pixels of click error becomes tens of centimetres of wall. Zooming
+ * is what makes precise tracing possible.
+ *
+ * The canvas keeps its full image resolution and is only stretched
+ * visually, so every stored coordinate stays in image space no matter
+ * the zoom.
+ */
+let canvasZoom = 1;
+
+function applyCanvasZoom() {
+  if (!canvas.width) return;
+  canvas.style.width = Math.round(canvas.width * canvasZoom) + 'px';
+  canvas.style.height = Math.round(canvas.height * canvasZoom) + 'px';
+}
+
+function setCanvasZoom(z) {
+  canvasZoom = Math.max(0.25, Math.min(8, z));
+  applyCanvasZoom();
+  if (zoomLabel) zoomLabel.textContent = Math.round(canvasZoom * 100) + '%';
+}
+
+/**
+ * Screen coordinates to image coordinates. Reading the scale from the
+ * element's own size means this holds however the canvas is stretched.
+ */
+function toCanvasCoords(event) {
   const rect = canvas.getBoundingClientRect();
-  const pixelX = event.clientX - rect.left;
-  const pixelY = event.clientY - rect.top;
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  return {
+    x: (event.clientX - rect.left) * sx,
+    y: (event.clientY - rect.top) * sy,
+  };
+}
+
+
+canvas.addEventListener('click', (event) => {
+  const pt = toCanvasCoords(event);
+  const pixelX = pt.x;
+  const pixelY = pt.y;
 
   onCanvasClick(pixelX, pixelY, {
     onCalibrationNeeded: () => {
@@ -139,6 +335,16 @@ canvas.addEventListener('click', (event) => {
         setStage('start');
         return;
       }
+      if (isAwaitingRefPoint()) {
+        status.textContent = getPreviousRefPoint()
+          ? 'Calibrated. Now click the same corner you marked on the floor ' +
+            'below — the dashed circle shows where it was.'
+          : 'Calibrated. Click one outside corner of the building — the ' +
+            'top-left is a good habit. Every floor is lined up against it.';
+        setStage('ready');
+        return;
+      }
+
       status.textContent = 'Calibrated. Click "Trace Walls" to start tracing.';
       setStage('ready');
     },
@@ -157,6 +363,11 @@ canvas.addEventListener('click', (event) => {
 
     onDoorNeedsSide: (width) => {
       status.textContent = `Doorway ${width.toFixed(2)}m wide. Now click one of the two arrows to set which way it opens.`;
+    },
+
+    onRefPointSet: () => {
+      status.textContent =
+        'Alignment corner set. Trace this floor as usual — "Trace Walls" to begin.';
     },
 
     onDoorSideAmbiguous: () => {
@@ -185,8 +396,8 @@ canvas.addEventListener('click', (event) => {
 // --------------------------------------------------
 
 canvas.addEventListener('mousemove', (event) => {
-  const rect = canvas.getBoundingClientRect();
-  setPreviewCursor(event.clientX - rect.left, event.clientY - rect.top, event.shiftKey);
+  const pt = toCanvasCoords(event);
+  setPreviewCursor(pt.x, pt.y, event.shiftKey);
 });
 
 canvas.addEventListener('mouseleave', () => {
@@ -338,6 +549,51 @@ preview3dBtn.addEventListener('click', () => {
 // --------------------------------------------------
 // Start Over
 // --------------------------------------------------
+
+newFloorBtn.addEventListener('click', () => {
+  if (!hasCurrentStoreyWork()) {
+    alert('Trace some walls first — there is nothing to file as a floor yet.');
+    return;
+  }
+
+  const label = prompt('Name for this floor (e.g. "First Floor"):', 'Floor ' + (getStoreyCount() + 1));
+  if (label === null) return;
+
+  const result = startNewFloor(label.trim());
+  if (!result.success) {
+    alert('Nothing traced yet.');
+    return;
+  }
+
+  setStage('ready');
+  status.textContent =
+    'Floor filed. Click the same corner on this floor\'s drawing that you ' +
+    'marked on the last one — the dashed circle shows where it was.';
+});
+
+function refreshSnapButton() {
+  snapLengthBtn.textContent = isLengthSnapEnabled()
+    ? 'Round lengths: on'
+    : 'Round lengths: off';
+}
+
+snapLengthBtn.addEventListener('click', () => {
+  setLengthSnapEnabled(!isLengthSnapEnabled());
+  refreshSnapButton();
+});
+
+refreshSnapButton();
+
+zoomInBtn.addEventListener('click', () => setCanvasZoom(canvasZoom * 1.25));
+zoomOutBtn.addEventListener('click', () => setCanvasZoom(canvasZoom / 1.25));
+zoomResetBtn.addEventListener('click', () => setCanvasZoom(1));
+
+// Ctrl+wheel zooms, as it does anywhere else.
+canvas.addEventListener('wheel', (event) => {
+  if (!event.ctrlKey) return;
+  event.preventDefault();
+  setCanvasZoom(canvasZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
 
 startOverBtn.addEventListener('click', () => {
   startOver();

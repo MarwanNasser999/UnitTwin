@@ -36,6 +36,22 @@ let doorPendingOpening = null; // { offset, width } awaiting a swing side
 // Rooms — floors and ceilings only
 // --------------------------------------------------
 let completedRooms = [];
+
+/*
+ * Storeys. Each completed storey is a plain snapshot in metres —
+ * walls and rooms — plus the reference point its coordinates are
+ * measured against.
+ *
+ * Two floors are usually drawn side by side on one sheet, so the
+ * upper floor traces out 15m east of the lower one. Aligning them
+ * means picking the same physical corner on each drawing; every
+ * storey is then shifted so those points coincide.
+ */
+let completedStoreys = [];
+let storeyRefPoint = null;      // { meterX, meterZ } for the storey being traced
+let awaitingRefPoint = false;   // true right after New Floor, until a corner is clicked
+let previousRefPoint = null;    // the corner picked on the floor below
+let previousStoreySnapshot = null; // the floor below, drawn as a guide
 let currentRoomPointIds = [];
 
 // --------------------------------------------------
@@ -47,6 +63,34 @@ const SNAP_TOLERANCE_PX = 18;
 const WALL_LINE_SPLIT_TOLERANCE_PX = 12;
 const WALL_PICK_TOLERANCE_PX = 20;
 const DOOR_SIDE_MIN_PX = 12;
+
+/*
+ * Plans are drawn to round numbers; clicks are not. A wall that traces
+ * at 3.47m on a plan dimensioned in centimetres is meant to be 3.50m,
+ * and on a low-resolution scan the error is larger than the rounding.
+ *
+ * A wall length within this tolerance of a multiple of the grid is
+ * pulled onto it, by moving the point being placed along the wall's
+ * own direction so the angle is untouched.
+ */
+const LENGTH_SNAP_GRID_M = 0.05;
+const LENGTH_SNAP_TOLERANCE_M = 0.06;
+let lengthSnapEnabled = true;
+
+// Metres per storey. The viewer scales this like everything else.
+const STOREY_HEIGHT_M = 2.5;
+
+/*
+ * Floors of the same building share an exterior, but tracing each one
+ * by hand never reproduces it exactly — a few centimetres out and the
+ * upper floor visibly overhangs the lower.
+ *
+ * With this on, every storey above the ground is stretched and shifted
+ * so its exterior extents match the ground floor's exactly. Right when
+ * floors share a footprint, wrong for a genuine setback or terrace —
+ * turn it off for those.
+ */
+const ALIGN_STOREY_FOOTPRINTS = true;
 const ORTHO_SNAP_DEGREES = 8;
 const COORD_SNAP_PX = 12;
 
@@ -67,7 +111,7 @@ export function getCanvas() {
   return canvas;
 }
 
-export function loadImageFile(file, onLoaded) {
+export function loadImageFile(file, onLoaded, keepStoreys) {
   const reader = new FileReader();
 
   reader.onload = (event) => {
@@ -80,6 +124,19 @@ export function loadImageFile(file, onLoaded) {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+
+      // Adding a floor from a second drawing keeps what is already
+      // traced; only a fresh project clears it. Calibration is per
+      // image, so a new image always needs recalibrating.
+      if (!keepStoreys) {
+        completedStoreys = [];
+      }
+
+      storeyRefPoint = null;
+      // Every floor picks its own alignment corner, the first
+      // included — otherwise the concept only appears on floor two,
+      // demanding a match to something never knowingly chosen.
+      awaitingRefPoint = true;
 
       calibrationPoints = [];
       pixelsPerMeter = null;
@@ -264,6 +321,73 @@ export function redrawAll() {
     }
   }
 
+  if (calibrationPoints[0] && pixelsPerMeter) {
+    const origin = calibrationPoints[0];
+
+    /*
+     * The floor below, drawn faintly over this drawing and lined up
+     * on the two reference corners. Keeping its measurements on
+     * screen is the whole point — you can see what the floor below
+     * measured while tracing the one above it.
+     */
+    if (previousStoreySnapshot) {
+      // Before the alignment corner is clicked there is nothing to
+      // line up against, so it is drawn where it was traced. Once the
+      // corner is set it snaps over this floor's drawing.
+      const aligned = previousRefPoint && storeyRefPoint;
+      const shiftX = aligned ? storeyRefPoint.meterX - previousRefPoint.meterX : 0;
+      const shiftZ = aligned ? storeyRefPoint.meterZ - previousRefPoint.meterZ : 0;
+
+      const toPixel = function (m) {
+        return {
+          pixelX: origin.x + (m.x + shiftX) * pixelsPerMeter,
+          pixelY: origin.y + (m.z + shiftZ) * pixelsPerMeter,
+        };
+      };
+
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+
+      for (const w of previousStoreySnapshot.walls) {
+        const a = toPixel(w.start);
+        const b = toPixel(w.end);
+
+        drawLine(a.pixelX, a.pixelY, b.pixelX, b.pixelY, '#00d0ff', 2);
+
+        const lengthM = Math.hypot(w.end.x - w.start.x, w.end.z - w.start.z);
+        drawLabel(a.pixelX, a.pixelY, b.pixelX, b.pixelY, lengthM.toFixed(2) + 'm', '#00d0ff');
+      }
+
+      ctx.restore();
+    }
+
+    // Where the floor below put its corner. On a single sheet this
+    // lands on the other drawing, so you can see what to match.
+    if (previousRefPoint) {
+      const gx = origin.x + previousRefPoint.meterX * pixelsPerMeter;
+      const gy = origin.y + previousRefPoint.meterZ * pixelsPerMeter;
+
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.arc(gx, gy, 12, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ff44ff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+
+      drawLabel(gx, gy, gx, gy, 'floor below', '#ff44ff');
+    }
+
+    if (storeyRefPoint) {
+      const px = origin.x + storeyRefPoint.meterX * pixelsPerMeter;
+      const py = origin.y + storeyRefPoint.meterZ * pixelsPerMeter;
+
+      drawMarker(px, py, '#ff44ff', 8);
+      drawLabel(px, py, px, py, 'REF', '#ff44ff');
+    }
+  }
+
   if (mode === 'calibrate') {
     for (const cp of calibrationPoints) {
       drawMarker(cp.x, cp.y, '#00ff00', 6);
@@ -350,7 +474,12 @@ export function setCalibrationDistance(realMeters) {
   if (pixelDist === 0) return false;
 
   pixelsPerMeter = pixelDist / realMeters;
-  mode = 'idle';
+
+  // A floor added from a second drawing needs its alignment corner
+  // before anything else; without this it drops to idle and the
+  // reference point is never collected.
+  mode = awaitingRefPoint ? 'refpoint' : 'idle';
+
   return true;
 }
 
@@ -575,9 +704,14 @@ export function setPreviewCursor(pixelX, pixelY, bypassSnapping) {
       previewCursor = { x: onWall.pixelX, y: onWall.pixelY };
     } else {
       const anchor = currentChainPointId ? getPoint(currentChainPointId) : null;
-      const snapped = bypassSnapping === true
+      let snapped = bypassSnapping === true
         ? { x: pixelX, y: pixelY }
         : applySnapping(pixelX, pixelY, anchor);
+
+      if (bypassSnapping !== true) {
+        snapped = applyLengthSnap(snapped.x, snapped.y, anchor);
+      }
+
       previewCursor = { x: snapped.x, y: snapped.y };
     }
   }
@@ -594,6 +728,40 @@ export function clearPreviewCursor() {
 // Wall tracing mode
 // ==================================================
 
+/**
+ * Nudges a click along the wall it is forming so the wall lands on a
+ * round length. Only the distance from the anchor changes, so ortho
+ * snapping and any deliberate angle survive intact.
+ */
+function applyLengthSnap(x, y, anchorPoint) {
+  if (!lengthSnapEnabled || !anchorPoint || !pixelsPerMeter) return { x: x, y: y };
+
+  const dx = x - anchorPoint.pixelX;
+  const dy = y - anchorPoint.pixelY;
+  const pixelLen = Math.hypot(dx, dy);
+  if (pixelLen < 1) return { x: x, y: y };
+
+  const metres = pixelLen / pixelsPerMeter;
+  const snapped = Math.round(metres / LENGTH_SNAP_GRID_M) * LENGTH_SNAP_GRID_M;
+
+  if (snapped <= 0) return { x: x, y: y };
+  if (Math.abs(metres - snapped) > LENGTH_SNAP_TOLERANCE_M) return { x: x, y: y };
+
+  const scale = (snapped * pixelsPerMeter) / pixelLen;
+  return {
+    x: anchorPoint.pixelX + dx * scale,
+    y: anchorPoint.pixelY + dy * scale,
+  };
+}
+
+export function setLengthSnapEnabled(on) {
+  lengthSnapEnabled = on === true;
+}
+
+export function isLengthSnapEnabled() {
+  return lengthSnapEnabled;
+}
+
 function handleWallModeClick(pixelX, pixelY, bypassSnapping) {
   let point = findNearbyPoint(pixelX, pixelY, SNAP_TOLERANCE_PX);
   let pointWasNew = false;
@@ -608,9 +776,15 @@ function handleWallModeClick(pixelX, pixelY, bypassSnapping) {
       pointWasNew = true;
     } else {
       const anchor = currentChainPointId ? getPoint(currentChainPointId) : null;
-      const snapped = bypassSnapping
+      let snapped = bypassSnapping
         ? { x: pixelX, y: pixelY }
         : applySnapping(pixelX, pixelY, anchor);
+
+      // Round the wall's length after squaring its angle, so the two
+      // corrections do not fight each other.
+      if (!bypassSnapping) {
+        snapped = applyLengthSnap(snapped.x, snapped.y, anchor);
+      }
 
       point = findNearbyPoint(snapped.x, snapped.y, SNAP_TOLERANCE_PX);
 
@@ -964,6 +1138,12 @@ export function onCanvasClick(pixelX, pixelY, callbacks, bypassSnapping) {
     return;
   }
 
+  if (mode === 'refpoint') {
+    if (pixelsPerMeter === null) return;
+    handleRefPointClick(pixelX, pixelY, cb);
+    return;
+  }
+
   if (pixelsPerMeter === null) return;
 
   if (mode === 'walls') {
@@ -986,23 +1166,37 @@ export function onCanvasClick(pixelX, pixelY, callbacks, bypassSnapping) {
 // Output generation
 // ==================================================
 
-export function saveAllRoomsForPreview() {
-  localStorage.removeItem('unittwin_trace_preview');
-
+/**
+ * Freezes the storey being traced into plain metre coordinates.
+ */
+function snapshotCurrentStorey() {
   const walls = networkWalls.map(function (w) {
     const a = getPoint(w.pointA);
     const b = getPoint(w.pointB);
 
     const wallData = {
       id: w.id,
-      start: { x: parseFloat(a.meterX.toFixed(3)), z: parseFloat(a.meterZ.toFixed(3)) },
-      end: { x: parseFloat(b.meterX.toFixed(3)), z: parseFloat(b.meterZ.toFixed(3)) },
+      start: { x: a.meterX, z: a.meterZ },
+      end: { x: b.meterX, z: b.meterZ },
     };
 
     const ops = w.openings || [];
     if (ops.length > 0) {
       wallData.openings = ops.map(function (o) {
         return { offset: o.offset, width: o.width, swing: o.swing || 1 };
+      });
+    }
+
+    const wins = w.windows || [];
+    if (wins.length > 0) {
+      wallData.windows = wins.map(function (n) {
+        return {
+          offset: n.offset,
+          width: n.width,
+          sillHeight: n.sillHeight,
+          headHeight: n.headHeight,
+          interiorSide: n.interiorSide,
+        };
       });
     }
 
@@ -1016,12 +1210,202 @@ export function saveAllRoomsForPreview() {
       wallIds: r.wallIds,
       corners: r.pointIds.map(function (pid) {
         const p = getPoint(pid);
-        return { x: parseFloat(p.meterX.toFixed(3)), z: parseFloat(p.meterZ.toFixed(3)) };
+        return { x: p.meterX, z: p.meterZ };
       }),
     };
   });
 
-  localStorage.setItem('unittwin_trace_preview', JSON.stringify({ walls: walls, rooms: rooms }));
+  // With no reference clicked, the first point traced serves as one.
+  // That way the ground floor needs nothing from the user.
+  let ref = storeyRefPoint;
+  if (!ref && networkPoints.length > 0) {
+    ref = { meterX: networkPoints[0].meterX, meterZ: networkPoints[0].meterZ };
+  }
+
+  return { walls: walls, rooms: rooms, ref: ref };
+}
+
+export function hasCurrentStoreyWork() {
+  return networkWalls.length > 0 || completedRooms.length > 0;
+}
+
+export function getStoreyCount() {
+  return completedStoreys.length + (hasCurrentStoreyWork() ? 1 : 0);
+}
+
+export function isAwaitingRefPoint() {
+  return awaitingRefPoint;
+}
+
+export function getPreviousRefPoint() {
+  return previousRefPoint;
+}
+
+export function getStoreyRefPoint() {
+  return storeyRefPoint;
+}
+
+/**
+ * Files the current storey and starts a fresh one on the same image.
+ * Calibration carries over — two floors on one sheet share a scale.
+ */
+export function startNewFloor(label) {
+  if (!hasCurrentStoreyWork()) return { success: false, reason: 'nothing_traced' };
+
+  const snap = snapshotCurrentStorey();
+  snap.label = label || 'Floor ' + (completedStoreys.length + 1);
+  completedStoreys.push(snap);
+
+  networkPoints = [];
+  networkWalls = [];
+  nextPointId = 1;
+  nextWallId = 1;
+
+  currentChainPointId = null;
+  wallChainHistory = [];
+  previewCursor = null;
+
+  doorWallId = null;
+  doorFirstT = null;
+  doorPendingOpening = null;
+
+  completedRooms = [];
+  currentRoomPointIds = [];
+
+  previousRefPoint = snap.ref || null;
+  previousStoreySnapshot = snap;
+
+  storeyRefPoint = null;
+  awaitingRefPoint = true;
+  mode = 'refpoint';
+
+  redrawAll();
+  return { success: true, storeyIndex: completedStoreys.length };
+}
+
+function handleRefPointClick(pixelX, pixelY, cb) {
+  const converted = pixelToMeter(pixelX, pixelY);
+  storeyRefPoint = { meterX: converted.meterX, meterZ: converted.meterZ };
+
+  awaitingRefPoint = false;
+  mode = 'idle';
+  redrawAll();
+
+  if (cb && cb.onRefPointSet) cb.onRefPointSet();
+}
+
+/**
+ * Extents of every wall endpoint in a storey snapshot.
+ */
+function storeyBounds(snap) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+
+  for (const w of snap.walls) {
+    for (const p of [w.start, w.end]) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+  }
+
+  if (!isFinite(minX)) return null;
+  return { minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ };
+}
+
+export function saveAllRoomsForPreview() {
+  localStorage.removeItem('unittwin_trace_preview');
+
+  const snaps = completedStoreys.slice();
+  if (hasCurrentStoreyWork()) {
+    const cur = snapshotCurrentStorey();
+    cur.label = 'Floor ' + (snaps.length + 1);
+    snaps.push(cur);
+  }
+
+  if (snaps.length === 0) return;
+
+  // The ground floor's reference point is the anchor; every storey
+  // above shifts so its own reference lands on the same spot.
+  const anchor = snaps[0].ref;
+  const groundBounds = storeyBounds(snaps[0]);
+
+  const storeys = snaps.map(function (snap, i) {
+    let dx = 0;
+    let dz = 0;
+
+    if (anchor && snap.ref) {
+      dx = anchor.meterX - snap.ref.meterX;
+      dz = anchor.meterZ - snap.ref.meterZ;
+    }
+
+    // Stretch this storey so its exterior extents match the ground
+    // floor's, then position it to sit exactly on top. A hand-traced
+    // upper floor is otherwise a few centimetres out and overhangs.
+    let sx = 1;
+    let sz = 1;
+    let ox = 0;
+    let oz = 0;
+
+    if (ALIGN_STOREY_FOOTPRINTS && i > 0 && groundBounds) {
+      const b = storeyBounds(snap);
+
+      if (b) {
+        const w = b.maxX - b.minX;
+        const d = b.maxZ - b.minZ;
+
+        if (w > 0.01) sx = (groundBounds.maxX - groundBounds.minX) / w;
+        if (d > 0.01) sz = (groundBounds.maxZ - groundBounds.minZ) / d;
+
+        ox = groundBounds.minX - b.minX * sx;
+        oz = groundBounds.minZ - b.minZ * sz;
+
+        // The fit already places it; the reference offset would
+        // double up.
+        dx = 0;
+        dz = 0;
+      }
+    }
+
+    const fx = function (v) { return v * sx + ox + dx; };
+    const fz = function (v) { return v * sz + oz + dz; };
+
+    const r3 = function (v) { return parseFloat(v.toFixed(3)); };
+
+    return {
+      id: i === 0 ? 'ground' : 'floor' + i,
+      label: i === 0 ? 'Ground Floor' : (snap.label || 'Floor ' + (i + 1)),
+      base: r3(i * STOREY_HEIGHT_M),
+      height: STOREY_HEIGHT_M,
+
+      walls: snap.walls.map(function (w) {
+        const out = {
+          id: w.id,
+          start: { x: r3(fx(w.start.x)), z: r3(fz(w.start.z)) },
+          end: { x: r3(fx(w.end.x)), z: r3(fz(w.end.z)) },
+        };
+        if (w.openings) out.openings = w.openings;
+        if (w.windows) out.windows = w.windows;
+        return out;
+      }),
+
+      rooms: snap.rooms.map(function (room) {
+        return {
+          id: room.id,
+          label: room.label,
+          wallIds: room.wallIds,
+          corners: room.corners.map(function (c) {
+            return { x: r3(fx(c.x)), z: r3(fz(c.z)) };
+          }),
+        };
+      }),
+    };
+  });
+
+  localStorage.setItem('unittwin_trace_preview', JSON.stringify({ storeys: storeys }));
 }
 
 // ==================================================
@@ -1029,6 +1413,12 @@ export function saveAllRoomsForPreview() {
 // ==================================================
 
 export function startOver() {
+  completedStoreys = [];
+  storeyRefPoint = null;
+  awaitingRefPoint = false;
+  previousRefPoint = null;
+  previousStoreySnapshot = null;
+
   calibrationPoints = [];
   pixelsPerMeter = null;
 
