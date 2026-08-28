@@ -64,7 +64,9 @@ viewer-app/
             traced from one sheet or from separate images, aligned on a
             corner marked on each. Canvas zoom and 5cm length snapping
             for accuracy.
-            - [ ] Balconies — open floor with a railing, no ceiling
+            - [x] Balconies — floor slab, railings on every side left
+                  without a wall, and an overhang above: flush with the
+                  building, pulled back from the open edges
             - [ ] Staircases — traced when the plan shows one, placed
                   by hand in the viewer when it does not
       - [ ] V6 — Automation. Read CAD, DXF and vector PDF directly

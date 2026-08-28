@@ -30,6 +30,7 @@ import {
   hasCurrentStoreyWork,
   getStoreyCount,
   isAwaitingRefPoint,
+  setRoomModeAllowsNewPoints,
   setLengthSnapEnabled,
   isLengthSnapEnabled,
   getPreviousRefPoint,
@@ -53,6 +54,7 @@ const doneDoorsBtn = document.getElementById('done-doors-btn');
 
 const defineRoomBtn = document.getElementById('define-room-btn');
 const finishRoomBtn = document.getElementById('finish-room-btn');
+const defineBalconyBtn = document.getElementById('define-balcony-btn');
 const cancelRoomBtn = document.getElementById('cancel-room-btn');
 
 const undoBtn = document.getElementById('undo-btn');
@@ -68,6 +70,10 @@ const newFloorBtn = document.getElementById('new-floor-btn');
  * case, since in the second it would mean nothing.
  */
 let multiFloorSheet = false;
+
+// Balconies are traced like rooms; the sides left without a wall
+// become open air with a railing.
+let pendingRoomKind = 'room';
 const snapLengthBtn = document.getElementById('snap-length-btn');
 const zoomInBtn = document.getElementById('zoom-in-btn');
 const zoomOutBtn = document.getElementById('zoom-out-btn');
@@ -95,6 +101,7 @@ function setStage(stage) {
   doneDoorsBtn.style.display = stage === 'doors' ? 'inline-block' : 'none';
 
   defineRoomBtn.style.display = stage === 'ready' ? 'inline-block' : 'none';
+  defineBalconyBtn.style.display = stage === 'ready' ? 'inline-block' : 'none';
   newFloorBtn.style.display =
     multiFloorSheet && stage === 'ready' ? 'inline-block' : 'none';
   finishRoomBtn.style.display = stage === 'room' ? 'inline-block' : 'none';
@@ -455,9 +462,22 @@ doneDoorsBtn.addEventListener('click', () => {
 // --------------------------------------------------
 
 defineRoomBtn.addEventListener('click', () => {
+  pendingRoomKind = 'room';
+  setRoomModeAllowsNewPoints(false);
   enterRoomMode();
   setStage('room');
   status.textContent = "Click the room's corners (white dots), in order, to define its floor and ceiling.";
+});
+
+defineBalconyBtn.addEventListener('click', () => {
+  pendingRoomKind = 'balcony';
+  setRoomModeAllowsNewPoints(true);
+  enterRoomMode();
+  setStage('room');
+  status.textContent =
+    "Click the balcony's corners in order — out over open air is fine, " +
+    'corners there do not need a traced wall. Any side without one gets ' +
+    'a railing.';
 });
 
 finishRoomBtn.addEventListener('click', () => {
@@ -466,19 +486,25 @@ finishRoomBtn.addEventListener('click', () => {
     return;
   }
 
-  const roomId = prompt('Enter a room ID (e.g. "bedroom"):');
+  const isBalcony = pendingRoomKind === 'balcony';
+
+  const roomId = prompt(
+    isBalcony ? 'Enter a balcony ID (e.g. "balcony1"):' : 'Enter a room ID (e.g. "bedroom"):'
+  );
   if (!roomId || !roomId.trim()) {
     status.textContent = 'Room not saved — enter an ID to confirm.';
     return;
   }
 
-  const roomLabel = prompt('Enter a display label (e.g. "Bedroom"):');
+  const roomLabel = prompt(
+    isBalcony ? 'Enter a display label (e.g. "Balcony"):' : 'Enter a display label (e.g. "Bedroom"):'
+  );
   if (!roomLabel || !roomLabel.trim()) {
     status.textContent = 'Room not saved — enter a display label to confirm.';
     return;
   }
 
-  const result = commitCurrentRoom(roomId.trim(), roomLabel.trim());
+  const result = commitCurrentRoom(roomId.trim(), roomLabel.trim(), pendingRoomKind);
 
   if (!result.success) {
     if (result.reason === 'duplicate_id') {
@@ -494,6 +520,8 @@ finishRoomBtn.addEventListener('click', () => {
     status.textContent = 'Room not saved.';
     return;
   }
+
+  pendingRoomKind = 'room';
 
   exitRoomMode();
   setStage('ready');

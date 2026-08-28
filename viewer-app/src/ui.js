@@ -174,8 +174,12 @@ function renderWallPanel(panel, roomsGroup) {
   for (const wallId of currentRoom.wallIds) {
     const wallData = floorPlan.walls.find((w) => w.id === wallId);
 
+    // Splitting a wall replaces it with two new ones, so a room
+    // committed earlier can still name a wall that no longer exists.
+    if (!wallData) continue;
+
     const btn = document.createElement('button');
-    btn.textContent = wallData.label;
+    btn.textContent = wallData.label || wallId;
     btn.className =
       wallId === selectedWallId ? 'ui-btn selected' : 'ui-btn';
 

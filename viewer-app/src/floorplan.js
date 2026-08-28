@@ -14,6 +14,16 @@ const FRAME_THICKNESS = 0.12 * PRESENTATION_SCALE;
 // couple of centimetres separates them while keeping both
 // paintable. The gap is behind the walls, so it never shows.
 const CEILING_INSET = 0.02 * PRESENTATION_SCALE;
+
+// Balconies: a railing on the open edges, and an overhang above
+// that projects from the building but stops short of the edge —
+// which is what makes it read as a balcony rather than a room
+// with its roof missing.
+const RAILING_HEIGHT = 1.1 * PRESENTATION_SCALE;
+const RAILING_THICKNESS = 0.06 * PRESENTATION_SCALE;
+const RAILING_CAP = 0.05 * PRESENTATION_SCALE;
+const OVERHANG_THICKNESS = 0.15 * PRESENTATION_SCALE;
+const OVERHANG_SETBACK = 0.35 * PRESENTATION_SCALE;
 const FRAME_DEPTH = WALL_THICKNESS * 0.9;
 
 function createWallSegment(
@@ -457,6 +467,132 @@ function createCeiling(corners, wallHeight) {
   return ceiling;
 }
 
+/**
+ * A railing along one open edge of a balcony: a thin panel with a
+ * slightly wider cap along the top.
+ */
+function createRailing(a, b) {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const length = Math.sqrt(dx * dx + dz * dz);
+  if (length === 0) return null;
+
+  const angle = Math.atan2(dz, dx);
+  const midX = (a.x + b.x) / 2;
+  const midZ = (a.z + b.z) / 2;
+
+  const group = new THREE.Group();
+  group.position.set(midX, 0, midZ);
+  group.rotation.y = -angle;
+  group.name = 'railing';
+
+  const material = new THREE.MeshStandardMaterial({ color: 0xbdbdb5 });
+
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(length, RAILING_HEIGHT - RAILING_CAP, RAILING_THICKNESS),
+    material
+  );
+  panel.position.y = (RAILING_HEIGHT - RAILING_CAP) / 2;
+  group.add(panel);
+
+  const cap = new THREE.Mesh(
+    new THREE.BoxGeometry(length, RAILING_CAP, RAILING_THICKNESS * 2.2),
+    new THREE.MeshStandardMaterial({ color: 0x8a8a82 })
+  );
+  cap.position.y = RAILING_HEIGHT - RAILING_CAP / 2;
+  group.add(cap);
+
+  return group;
+}
+
+/**
+ * Pulls the balcony outline back from its open edges only, leaving
+ * the building side flush. Each corner moves inward by the setback
+ * of whichever adjacent edges are open, so the overhang projects out
+ * over the balcony and stops short of the railing.
+ */
+function setBackOpenEdges(corners, openEdges, setback) {
+  const n = corners.length;
+  const isOpen = {};
+  (openEdges || []).forEach(function (i) { isOpen[i] = true; });
+
+  // Inward is the side the polygon's interior sits on.
+  const inward = signedArea(corners) < 0 ? -1 : 1;
+
+  return corners.map(function (c, i) {
+    let ox = 0;
+    let oz = 0;
+
+    // Edge i-1 arrives at this corner; edge i leaves it.
+    [(i - 1 + n) % n, i].forEach(function (edge) {
+      if (!isOpen[edge]) return;
+
+      const a = corners[edge];
+      const b = corners[(edge + 1) % n];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len === 0) return;
+
+      ox += (-dz / len) * inward * setback;
+      oz += (dx / len) * inward * setback;
+    });
+
+    return { x: c.x + ox, z: c.z + oz };
+  });
+}
+
+function createBalconyOverhang(corners, openEdges, wallHeight) {
+  const inset = setBackOpenEdges(corners, openEdges, OVERHANG_SETBACK);
+
+  const shape = buildRoomShape(inset);
+  const geometry = new THREE.ShapeGeometry(shape);
+  applyShapeUVs(geometry, inset);
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xd8d8d0,
+    side: THREE.DoubleSide,
+  });
+
+  const group = new THREE.Group();
+  group.name = 'overhang';
+
+  const soffit = new THREE.Mesh(geometry, material);
+  soffit.name = 'ceiling';
+  soffit.rotation.x = Math.PI / 2;
+  soffit.position.y = wallHeight - OVERHANG_THICKNESS;
+  group.add(soffit);
+
+  const topGeom = new THREE.ShapeGeometry(buildRoomShape(inset));
+  applyShapeUVs(topGeom, inset);
+  const top = new THREE.Mesh(topGeom, material);
+  top.rotation.x = Math.PI / 2;
+  top.position.y = wallHeight;
+  group.add(top);
+
+  // Closes the slab's exposed edges so it reads as solid, not as a
+  // pair of planes.
+  const n = inset.length;
+  for (let i = 0; i < n; i++) {
+    const a = inset[i];
+    const b = inset[(i + 1) % n];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const len = Math.hypot(dx, dz);
+    if (len === 0) continue;
+
+    const edge = new THREE.Mesh(
+      new THREE.BoxGeometry(len, OVERHANG_THICKNESS, 0.02 * PRESENTATION_SCALE),
+      material
+    );
+    edge.position.set((a.x + b.x) / 2, wallHeight - OVERHANG_THICKNESS / 2, (a.z + b.z) / 2);
+    edge.rotation.y = -Math.atan2(dz, dx);
+    group.add(edge);
+  }
+
+  return group;
+}
+
 let currentFloorPlanRef = null;
 
 /**
@@ -494,7 +630,22 @@ export function buildFloorPlan(floorPlan) {
     const roomGroup = new THREE.Group();
     roomGroup.name = roomData.id;
     roomGroup.add(createFloor(roomData.corners));
-    roomGroup.add(createCeiling(roomData.corners, WALL_HEIGHT));
+
+    if (roomData.kind === 'balcony') {
+      // Open to the air: railings where no wall was traced, and an
+      // overhang above instead of a full ceiling.
+      roomGroup.add(
+        createBalconyOverhang(roomData.corners, roomData.openEdges, WALL_HEIGHT)
+      );
+
+      const n = roomData.corners.length;
+      (roomData.openEdges || []).forEach(function (i) {
+        const rail = createRailing(roomData.corners[i], roomData.corners[(i + 1) % n]);
+        if (rail) roomGroup.add(rail);
+      });
+    } else {
+      roomGroup.add(createCeiling(roomData.corners, WALL_HEIGHT));
+    }
     root.add(roomGroup);
   }
 

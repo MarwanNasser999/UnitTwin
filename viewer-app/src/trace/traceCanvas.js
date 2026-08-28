@@ -73,6 +73,7 @@ const DOOR_SIDE_MIN_PX = 12;
  * pulled onto it, by moving the point being placed along the wall's
  * own direction so the angle is untouched.
  */
+const COLLINEAR_TOLERANCE_M = 0.15;
 const LENGTH_SNAP_GRID_M = 0.05;
 const LENGTH_SNAP_TOLERANCE_M = 0.06;
 let lengthSnapEnabled = true;
@@ -538,6 +539,18 @@ export function exitDoorMarkMode() {
   redrawAll();
 }
 
+let roomModeAllowsNewPoints = false;
+
+/**
+ * Balconies are bounded partly by the building and partly by open
+ * air. The open sides have no traced wall, so their corners do not
+ * exist as points — in that mode a click creates one rather than
+ * demanding an existing corner.
+ */
+export function setRoomModeAllowsNewPoints(allow) {
+  roomModeAllowsNewPoints = allow === true;
+}
+
 export function enterRoomMode() {
   mode = 'room';
   currentRoomPointIds = [];
@@ -661,15 +674,25 @@ function splitWallAtPoint(wall, pixelX, pixelY) {
 
   networkWalls = networkWalls.filter(function (w) { return w.id !== wall.id; });
 
+  const firstId = 'w' + nextWallId;
   networkWalls.push({
-    id: 'w' + nextWallId, pointA: wall.pointA, pointB: newPoint.id, openings: [],
+    id: firstId, pointA: wall.pointA, pointB: newPoint.id, openings: [],
   });
   nextWallId = nextWallId + 1;
 
+  const secondId = 'w' + nextWallId;
   networkWalls.push({
-    id: 'w' + nextWallId, pointA: newPoint.id, pointB: wall.pointB, openings: [],
+    id: secondId, pointA: newPoint.id, pointB: wall.pointB, openings: [],
   });
   nextWallId = nextWallId + 1;
+
+  // Rooms already committed still name the wall that just disappeared.
+  // Swap in the two halves so their boundaries stay complete.
+  for (const room of completedRooms) {
+    const at = room.wallIds.indexOf(wall.id);
+    if (at === -1) continue;
+    room.wallIds.splice(at, 1, firstId, secondId);
+  }
 
   return newPoint;
 }
@@ -998,11 +1021,24 @@ export function undoLastMarkedDoor() {
 // ==================================================
 
 function handleRoomModeClick(pixelX, pixelY, onNoPointNearby) {
-  const point = findNearbyPoint(pixelX, pixelY, SNAP_TOLERANCE_PX);
+  let point = findNearbyPoint(pixelX, pixelY, SNAP_TOLERANCE_PX);
+
   if (!point) {
-    if (onNoPointNearby) onNoPointNearby();
-    return;
+    if (!roomModeAllowsNewPoints) {
+      if (onNoPointNearby) onNoPointNearby();
+      return;
+    }
+
+    // Square up against the previous corner, the same as tracing a
+    // wall, so a balcony comes out rectangular rather than hand-drawn.
+    const prevId = currentRoomPointIds[currentRoomPointIds.length - 1];
+    const anchor = prevId ? getPoint(prevId) : null;
+    const snapped = applySnapping(pixelX, pixelY, anchor);
+
+    point = findNearbyPoint(snapped.x, snapped.y, SNAP_TOLERANCE_PX)
+      || createPoint(snapped.x, snapped.y);
   }
+
   currentRoomPointIds.push(point.id);
   redrawAll();
 }
@@ -1079,7 +1115,54 @@ function findSelfIntersection(points) {
 // Commit room — floors and ceilings only. Doors live on walls.
 // ==================================================
 
-export function commitCurrentRoom(roomId, roomLabel) {
+/**
+ * Where a point falls along a segment, or null if it is too far off
+ * that segment's line to count as lying on it.
+ */
+function projectOntoLine(point, segStart, segEnd, dx, dz, lengthSq) {
+  const t = ((point.x - segStart.x) * dx + (point.z - segStart.z) * dz) / lengthSq;
+  const projX = segStart.x + t * dx;
+  const projZ = segStart.z + t * dz;
+  if (Math.hypot(point.x - projX, point.z - projZ) > COLLINEAR_TOLERANCE_M) return null;
+  return t;
+}
+
+/**
+ * Every traced wall lying along one boundary segment. A side traced
+ * in several pieces still belongs to the room, and a side with none
+ * is open air — which is what a balcony's railings are built on.
+ */
+function wallsAlongSegment(aPoint, bPoint) {
+  const segStart = { x: aPoint.meterX, z: aPoint.meterZ };
+  const segEnd = { x: bPoint.meterX, z: bPoint.meterZ };
+
+  const dx = segEnd.x - segStart.x;
+  const dz = segEnd.z - segStart.z;
+  const lengthSq = dx * dx + dz * dz;
+  if (lengthSq === 0) return [];
+
+  const found = [];
+
+  for (const wall of networkWalls) {
+    const wa = getPoint(wall.pointA);
+    const wb = getPoint(wall.pointB);
+    if (!wa || !wb) continue;
+
+    const ta = projectOntoLine({ x: wa.meterX, z: wa.meterZ }, segStart, segEnd, dx, dz, lengthSq);
+    const tb = projectOntoLine({ x: wb.meterX, z: wb.meterZ }, segStart, segEnd, dx, dz, lengthSq);
+    if (ta === null || tb === null) continue;
+
+    const lo = Math.min(ta, tb);
+    const hi = Math.max(ta, tb);
+    if (hi < -0.02 || lo > 1.02) continue;
+
+    found.push(wall.id);
+  }
+
+  return found;
+}
+
+export function commitCurrentRoom(roomId, roomLabel, kind) {
   let points = currentRoomPointIds.slice();
   if (points.length > 1 && points[points.length - 1] === points[0]) {
     points = points.slice(0, -1);
@@ -1099,25 +1182,33 @@ export function commitCurrentRoom(roomId, roomLabel) {
     return { success: false, reason: 'self_intersecting', i: intersection.i, j: intersection.j };
   }
 
-  // Record which traced walls form this room's boundary, where one
-  // exists. Purely informational — nothing is generated from it.
   const wallIds = [];
+  const openEdges = [];
+
   for (let i = 0; i < points.length; i++) {
-    const aId = points[i];
-    const bId = points[(i + 1) % points.length];
+    const aPoint = getPoint(points[i]);
+    const bPoint = getPoint(points[(i + 1) % points.length]);
+    if (!aPoint || !bPoint) continue;
 
-    const wall = networkWalls.find(function (w) {
-      return (w.pointA === aId && w.pointB === bId) || (w.pointA === bId && w.pointB === aId);
-    });
+    const along = wallsAlongSegment(aPoint, bPoint);
 
-    if (wall && wallIds.indexOf(wall.id) === -1) wallIds.push(wall.id);
+    if (along.length === 0) {
+      // Nothing traced here, so this side is open air.
+      openEdges.push(i);
+    } else {
+      along.forEach(function (id) {
+        if (wallIds.indexOf(id) === -1) wallIds.push(id);
+      });
+    }
   }
 
   completedRooms.push({
     id: roomId,
     label: roomLabel,
+    kind: kind === 'balcony' ? 'balcony' : 'room',
     pointIds: points,
     wallIds: wallIds,
+    openEdges: openEdges,
   });
 
   currentRoomPointIds = [];
@@ -1207,7 +1298,9 @@ function snapshotCurrentStorey() {
     return {
       id: r.id,
       label: r.label,
+      kind: r.kind,
       wallIds: r.wallIds,
+      openEdges: r.openEdges,
       corners: r.pointIds.map(function (pid) {
         const p = getPoint(pid);
         return { x: p.meterX, z: p.meterZ };
@@ -1396,7 +1489,9 @@ export function saveAllRoomsForPreview() {
         return {
           id: room.id,
           label: room.label,
+          kind: room.kind,
           wallIds: room.wallIds,
+          openEdges: room.openEdges,
           corners: room.corners.map(function (c) {
             return { x: r3(fx(c.x)), z: r3(fz(c.z)) };
           }),
